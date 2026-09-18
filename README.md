@@ -41,7 +41,7 @@ question is atomic and thresholds are applied in code, never by the model.
 | `destructive_threshold`  | `0.90`                             | P(true) that triggers                                      |
 | `exfiltration_threshold` | `0.70`                             | P(true) that triggers                                      |
 | `impact_threshold`       | `2.5`                              | Score that triggers (0–3 scale)                            |
-| `model` / `base_url`     | `typesafe-ai/jev` / AI Gateway     | Endpoint overrides                                         |
+| `jev_model` / `jev_base_url` | `typesafe-ai/jev` / AI Gateway | Endpoint overrides (prefixed: the loader rejects bare `model`/`base_url`, root is reserved) |
 | `log_path`               | `<HERMES_HOME>/logs/jev-judge.log` | JSONL decision log                                         |
 
 Requires `AI_GATEWAY_API_KEY` (Vercel AI Gateway). Fail-open without it.

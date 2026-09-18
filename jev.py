@@ -23,8 +23,23 @@ DEFAULT_MODEL = "typesafe-ai/jev"
 PROTOCOL_VERSION = "0.0.1"
 SPEC_VERSION = "4"
 
-# vck_ (Vercel), sk- (OpenAI-style), ghp_ (GitHub), gsk_ (Groq), AIza (Google), xox* (Slack)
-_SECRET_RE = re.compile(r"\b(?:sk|vck|ghp|gho|gsk|AIza|xox[baprs])[-_A-Za-z0-9]{12,}\b")
+# Known secret prefixes: sk- (OpenAI-style), gh?_ / github_pat_ (GitHub),
+# AKIA (AWS access key id), xox* (Slack), AIza (Google), vck_ (Vercel).
+_PREFIX_RE = re.compile(
+    r"\b(?:sk-[A-Za-z0-9_-]{4,}"
+    r"|gh[a-z]?_[A-Za-z0-9]{8,}"
+    r"|github_pat_[A-Za-z0-9_-]{8,}"
+    r"|AKIA[0-9A-Z]{16}"
+    r"|xox[a-z]*-[A-Za-z0-9-]+"
+    r"|AIza[A-Za-z0-9_-]{8,}"
+    r"|vck_[A-Za-z0-9_-]{8,})"
+)
+_BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/=]+", re.IGNORECASE)
+_BASIC_RE = re.compile(r"Basic\s+[A-Za-z0-9+/=]{8,}", re.IGNORECASE)
+_PEM_RE = re.compile(r"-----BEGIN[^-]*PRIVATE KEY-----[\s\S]*?-----END[^-]*-----")
+_JWT_RE = re.compile(r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+")
+# Cap-and-flag fallback: any long spaceless run is treated as a secret.
+_GENERIC_RE = re.compile(r"[A-Za-z0-9+/=_-]{32,}")
 
 
 def redact(value, limit: int = 4000) -> str:
@@ -34,7 +49,12 @@ def redact(value, limit: int = 4000) -> str:
         if isinstance(value, str)
         else json.dumps(value, ensure_ascii=False, default=str)
     )
-    text = _SECRET_RE.sub("[REDACTED]", text)
+    text = _PEM_RE.sub("[REDACTED]", text)
+    text = _BEARER_RE.sub("[REDACTED]", text)
+    text = _BASIC_RE.sub("[REDACTED]", text)
+    text = _JWT_RE.sub("[REDACTED]", text)
+    text = _PREFIX_RE.sub("[REDACTED]", text)
+    text = _GENERIC_RE.sub("[REDACTED]", text)
     if len(text) > limit:
         text = text[:limit] + f"...(+{len(text) - limit} chars)"
     return text

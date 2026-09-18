@@ -10,55 +10,20 @@ from __future__ import annotations
 import logging
 
 from . import gate, schemas, tools
-from .jev import JevClient
 
 logger = logging.getLogger(__name__)
-
-_clients: dict[tuple, JevClient] = {}
-
-
-def _settings(ctx) -> dict:
-    return {
-        "mode": ctx.get_config("mode", default="shadow"),
-        "tools": ctx.get_config("tools", default=["terminal", "write_file", "patch"]),
-        "timeout_s": ctx.get_config("timeout_s", default=3.0),
-        "cache_seconds": ctx.get_config("cache_seconds", default=120),
-        "destructive_threshold": ctx.get_config("destructive_threshold", default=0.90),
-        "exfiltration_threshold": ctx.get_config(
-            "exfiltration_threshold", default=0.70
-        ),
-        "impact_threshold": ctx.get_config("impact_threshold", default=2.5),
-        "jev_model": ctx.get_config("jev_model", default="typesafe-ai/jev"),
-        "jev_base_url": ctx.get_config(
-            "jev_base_url", default="https://ai-gateway.vercel.sh/v4/ai"
-        ),
-        "log_path": ctx.get_config("log_path", default=""),
-    }
-
-
-def _client_for(s: dict) -> JevClient:
-    key = (
-        s["jev_base_url"],
-        s["jev_model"],
-        float(s["timeout_s"]),
-        int(s["cache_seconds"]),
-    )
-    if key not in _clients:
-        _clients[key] = JevClient(
-            base_url=key[0], model=key[1], timeout=key[2], cache_seconds=key[3]
-        )
-    return _clients[key]
 
 
 def register(ctx):
     """Wire the gate hook and the jev_ask tool."""
+    tools.bind(ctx)  # the tool handler receives no ctx of its own
 
     def on_pre_tool_call(tool_name=None, args=None, task_id=None, **kwargs):
         try:
-            s = _settings(ctx)
+            s = gate.settings_for(ctx)
             if tool_name not in (s["tools"] or []):
                 return None
-            verdict = gate.judge(_client_for(s), tool_name, args or {}, s)
+            verdict = gate.judge(gate.client_for(s), tool_name, args or {}, s)
             if verdict is None:  # fail-open: no key, timeout, 429, transport error
                 gate.log_decision(
                     s["log_path"],

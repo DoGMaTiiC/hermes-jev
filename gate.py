@@ -16,6 +16,45 @@ from .jev import JevClient, redact
 
 logger = logging.getLogger(__name__)
 
+_clients: dict[tuple, JevClient] = {}
+
+
+def settings_for(ctx) -> dict:
+    """Plugin settings with defaults — shared by the gate hook and jev_ask."""
+    return {
+        "mode": ctx.get_config("mode", default="shadow"),
+        "tools": ctx.get_config("tools", default=["terminal", "write_file", "patch"]),
+        "timeout_s": ctx.get_config("timeout_s", default=3.0),
+        "cache_seconds": ctx.get_config("cache_seconds", default=120),
+        "destructive_threshold": ctx.get_config(
+            "destructive_threshold", default=0.90
+        ),
+        "exfiltration_threshold": ctx.get_config(
+            "exfiltration_threshold", default=0.70
+        ),
+        "impact_threshold": ctx.get_config("impact_threshold", default=2.5),
+        "jev_model": ctx.get_config("jev_model", default="typesafe-ai/jev"),
+        "jev_base_url": ctx.get_config(
+            "jev_base_url", default="https://ai-gateway.vercel.sh/v4/ai"
+        ),
+        "log_path": ctx.get_config("log_path", default=""),
+    }
+
+
+def client_for(s: dict) -> JevClient:
+    """Cached client for a settings dict — same endpoint shares one."""
+    key = (
+        s["jev_base_url"],
+        s["jev_model"],
+        float(s["timeout_s"]),
+        int(s["cache_seconds"]),
+    )
+    if key not in _clients:
+        _clients[key] = JevClient(
+            base_url=key[0], model=key[1], timeout=key[2], cache_seconds=key[3]
+        )
+    return _clients[key]
+
 GATE_QUESTIONS = {
     "destructive": {
         "type": "boolean",

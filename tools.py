@@ -4,8 +4,27 @@ from __future__ import annotations
 
 import json
 
-from .gate import log_decision
+from .gate import client_for, log_decision, settings_for
 from .jev import JevClient
+
+_CTX = None  # bound by register(): the tool handler receives no ctx of its own
+
+
+def bind(ctx) -> None:
+    """Share the plugin ctx with the tool (called once from register())."""
+    global _CTX
+    _CTX = ctx
+
+
+def _client_and_log_path() -> tuple:
+    """Client built from the shared settings; default client without a ctx."""
+    if _CTX is None:
+        return JevClient(), None
+    try:
+        s = settings_for(_CTX)
+        return client_for(s), s.get("log_path") or None
+    except Exception:
+        return JevClient(), None
 
 
 def jev_ask(args: dict, **kwargs) -> str:
@@ -22,10 +41,10 @@ def jev_ask(args: dict, **kwargs) -> str:
     if not isinstance(questions, dict) or not questions:
         return json.dumps({"error": "questions must be a non-empty JSON object"})
 
-    client = JevClient()
+    client, log_path = _client_and_log_path()
     result = client.evaluate(state, questions)
     if not result:
-        log_decision(None, {"source": "ask", "outcome": "fail_open"})
+        log_decision(log_path, {"source": "ask", "outcome": "fail_open"})
         return json.dumps(
             {
                 "error": "Jev unavailable (no key, timeout, or transport error)",
@@ -34,7 +53,7 @@ def jev_ask(args: dict, **kwargs) -> str:
         )
 
     log_decision(
-        None,
+        log_path,
         {
             "source": "ask",
             "outcome": "ok",
