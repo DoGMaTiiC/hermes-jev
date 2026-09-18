@@ -5,11 +5,6 @@ provides_tools:
   - jev_ask
 provides_hooks:
   - pre_tool_call
-requires_env:
-  - name: AI_GATEWAY_API_KEY
-    description: "Vercel AI Gateway key (Jev runs as typesafe-ai/jev on the gateway)."
-    url: "https://vercel.com/dashboard"
-    secret: true
 license: MIT
 tags: [jev, typesafe, safety, gate, judgment]
 config_schema:
@@ -27,7 +22,7 @@ config_schema:
     description: "Wall-clock budget per Jev call (fail-open on timeout)"
   cache_seconds:
     type: int
-    default: 120
+    default: 300
     description: "Identical tool calls are judged once per this window"
   destructive_threshold:
     type: float
@@ -44,6 +39,32 @@ config_schema:
   jev_base_url:
     type: str
     default: "https://ai-gateway.vercel.sh/v4/ai"
+  backend:
+    type: str
+    default: "auto"
+    description: "auto = TypeSafe key wins, else gateway; typesafe|gateway forces one"
+  typesafe_model:
+    type: str
+    default: "jev-latest"
+  typesafe_base_url:
+    type: str
+    default: "https://api.typesafe.ai"
+  retry_max_wait_s:
+    type: float
+    default: 2.0
+    description: "On 429/529, retry once only if Retry-After waits at most this long"
+  breaker_threshold:
+    type: int
+    default: 3
+    description: "Consecutive 429/529s before going silent"
+  breaker_cooldown_s:
+    type: int
+    default: 120
+    description: "Silence window after the breaker opens"
+  min_interval_s:
+    type: float
+    default: 0.25
+    description: "Minimum gap between outgoing Jev calls, per process"
   log_path:
     type: str
     default: ""

@@ -16,6 +16,7 @@ sys.path.insert(0, str(BASE))
 
 from jev_router import roster as R
 from jev_router import router as RT
+from jev_router import client as C
 
 # Root __init__ loaded as a package alias (dir name has hyphens, so no plain import).
 _pkg = types.ModuleType("jevskillrouter")
@@ -331,8 +332,10 @@ def test_cli_status_and_check():
         home = Path(tmp) / "home"
         (home / "skills").mkdir(parents=True)
         old_home, old_key = os.environ.get("HERMES_HOME"), os.environ.get("AI_GATEWAY_API_KEY")
+        old_ts = os.environ.get("TYPESAFE_API_KEY")
         os.environ["HERMES_HOME"] = str(home)
         os.environ.pop("AI_GATEWAY_API_KEY", None)
+        os.environ.pop("TYPESAFE_API_KEY", None)
         try:
             ctx = FakeCtx({"mode": "off", "roster_dir": str(home / "skills"),
                            "log_path": str(home / "logs" / "jev-skill-router.log")})
@@ -349,7 +352,397 @@ def test_cli_status_and_check():
                 os.environ["HERMES_HOME"] = old_home
             if old_key is not None:
                 os.environ["AI_GATEWAY_API_KEY"] = old_key
+            if old_ts is not None:
+                os.environ["TYPESAFE_API_KEY"] = old_ts
     print("ok  cli status e check")
+
+
+# --- Dual backend (ticket 10): transporte stubado, relógio mockado, sem rede ---
+
+import contextlib as _contextlib
+import email.utils as _email_utils
+import time as _time
+import urllib.error as _urlerror
+
+
+class _FakeResp:
+    def __init__(self, body):
+        self._raw = json.dumps(body).encode()
+
+    def read(self):
+        return self._raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def _http_error(code, retry_after=None):
+    hdrs = {}
+    if retry_after is not None:
+        hdrs["retry-after"] = retry_after
+    return _urlerror.HTTPError("https://x.invalid/", code, "limited", hdrs, None)
+
+
+class _Script:
+    """Transporte stubado: sequência de ('ok', body) | ('http', code, retry-after)."""
+
+    def __init__(self, steps):
+        self.steps = list(steps)
+        self.calls = []  # (url, headers minúsculos, payload)
+
+    def __call__(self, req, timeout=None):
+        headers = {k.lower(): v for k, v in req.header_items()}
+        payload = json.loads(req.data.decode())
+        self.calls.append((req.full_url, headers, payload))
+        kind = self.steps.pop(0)
+        if kind[0] == "ok":
+            return _FakeResp(kind[1])
+        raise _http_error(kind[1], kind[2] if len(kind) > 2 else None)
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 1000.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.t
+
+    def sleep(self, s):
+        self.sleeps.append(s)
+        self.t += s
+
+
+_TS_BODY = {
+    "answers": {
+        "destructive": {"type": "noul", "noul": 0.97},
+        "pick": {
+            "type": "choice",
+            "choice": "b",
+            "probabilities": {"a": 0.1, "b": 0.9},
+            "confidence": 0.8,
+        },
+    },
+    "usage": {"input_tokens": 10, "output_tokens": 5},
+}
+
+_GW_BODY = {
+    "answers": {"which": {"choice": "alpha", "probabilities": {"alpha": 0.7}}},
+    "providerMetadata": {
+        "typesafe": {"confidence": {"which": 0.8}},
+        "gateway": {"cost": "0.00002"},
+    },
+    "usage": {"input_tokens": 10, "output_tokens": 5},
+}
+
+_Q = {"q": {"type": "boolean", "instructions": "?"}}
+_TS_URL = "https://api.typesafe.ai/v1/systemone"
+_GW_URL = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
+
+
+def _dual_client(keys, **kw):
+    """Cliente com HERMES_HOME vazio, chaves controladas e estado global zerado."""
+    steps = kw.pop("_steps", None) or []
+    kw.setdefault("min_interval_s", 0)
+    with tempfile.TemporaryDirectory() as home:
+        saved = {
+            n: os.environ.get(n)
+            for n in ("TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")
+        }
+        try:
+            for n in ("TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY"):
+                os.environ.pop(n, None)
+            for n, v in keys.items():
+                os.environ[n] = v
+            os.environ["HERMES_HOME"] = home
+            C._PACE_LAST.clear()
+            C._BREAKER.clear()
+            client = C.JevClient(**kw)
+            clock = _Clock()
+            client._clock = clock.monotonic
+            client._sleep = clock.sleep
+            script = _Script(steps)
+            client._urlopen = script
+            yield client, script, clock
+        finally:
+            for n, v in saved.items():
+                if v is None:
+                    os.environ.pop(n, None)
+                else:
+                    os.environ[n] = v
+
+
+def _run_dual(keys, **kw):
+    """Devolve o context manager; entrar com _enter, sair com _leave."""
+    return _contextlib.contextmanager(_dual_client)(keys, **kw)
+
+
+def _enter(ctx):
+    entered = ctx.__enter__()
+    entered[0]._test_ctx = ctx
+    return entered
+
+
+def _leave(client):
+    client._test_ctx.__exit__(None, None, None)
+
+
+def test_settings_dual_defaults():
+    s = plugin._settings(FakeCtx({}))
+    assert s["backend"] == "auto", s
+    assert s["typesafe_model"] == "jev-latest", s
+    assert s["typesafe_base_url"] == "https://api.typesafe.ai", s
+    assert s["retry_max_wait_s"] == 2.0, s
+    assert s["breaker_threshold"] == 3, s
+    assert s["breaker_cooldown_s"] == 120, s
+    assert s["min_interval_s"] == 0.25, s
+    print("ok  settings com defaults do backend duplo")
+
+
+def test_hook_auto_silent_without_key():
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        (home / "skills").mkdir(parents=True)
+        saved = {
+            n: os.environ.get(n)
+            for n in ("TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")
+        }
+        os.environ.pop("TYPESAFE_API_KEY", None)
+        os.environ.pop("AI_GATEWAY_API_KEY", None)
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            ctx = FakeCtx({"mode": "auto"})
+            plugin.register(ctx)
+            handler = ctx.hooks[0][1]
+            assert handler(user_message="deploy the site") is None
+            ctx2 = FakeCtx({"mode": "auto", "backend": "typesafe"})
+            plugin.register(ctx2)
+            assert ctx2.hooks[0][1](user_message="deploy the site") is None
+        finally:
+            for n, v in saved.items():
+                if v is None:
+                    os.environ.pop(n, None)
+                else:
+                    os.environ[n] = v
+    print("ok  hook auto silencioso sem chave (sem rede)")
+
+
+def test_typesafe_noul_mapping():
+    client, script, _ = _enter(
+        _run_dual({"TYPESAFE_API_KEY": "ts-key"}, _steps=[("ok", _TS_BODY)])
+    )
+    try:
+        res = client.evaluate({"request": "x"}, _Q)
+        assert res is not None, "typesafe com chave devia responder"
+        assert len(script.calls) == 1
+        url, headers, payload = script.calls[0]
+        assert url == _TS_URL, url
+        assert headers.get("authorization") == "Bearer ts-key", headers
+        assert "ai-model-id" not in headers, headers
+        assert payload["model"] == "jev-latest", payload
+        assert payload["questions"] == {"q": {"type": "noul", "instructions": "?"}}, payload
+        assert res["answers"]["destructive"] == {"type": "boolean", "probability": 0.97}, res
+        assert res["answers"]["pick"]["choice"] == "b", res
+        assert res["confidence"] == {"pick": 0.8}, res["confidence"]
+        assert res["cost"] is None, res
+        assert res["usage"] == {"input_tokens": 10, "output_tokens": 5}, res
+    finally:
+        _leave(client)
+    print("ok  typesafe direto: boolean vira noul, confiança inline, custo None")
+
+
+def test_gateway_confidence_and_cost():
+    client, script, _ = _enter(
+        _run_dual({"AI_GATEWAY_API_KEY": "gw-key"}, _steps=[("ok", _GW_BODY)])
+    )
+    try:
+        res = client.evaluate({"request": "x"}, _Q)
+        assert res is not None
+        url, headers, payload = script.calls[0]
+        assert url == _GW_URL, url
+        assert headers.get("ai-model-id") == "typesafe-ai/jev", headers
+        assert "model" not in payload, payload
+        assert payload["questions"] == _Q, payload
+        assert res["answers"] == _GW_BODY["answers"], res
+        assert res["confidence"] == {"which": 0.8}, res
+        assert res["cost"] == "0.00002", res
+    finally:
+        _leave(client)
+    print("ok  gateway: confiança via providerMetadata, custo repassado")
+
+
+def test_backend_selection():
+    cases = [
+        ({"TYPESAFE_API_KEY": "t", "AI_GATEWAY_API_KEY": "g"}, "auto", "typesafe", _TS_URL),
+        ({"AI_GATEWAY_API_KEY": "g"}, "auto", "gateway", _GW_URL),
+        ({"TYPESAFE_API_KEY": "t"}, "auto", "typesafe", _TS_URL),
+        ({}, "auto", None, None),
+        ({"TYPESAFE_API_KEY": "", "AI_GATEWAY_API_KEY": "g"}, "auto", "gateway", _GW_URL),
+        ({"AI_GATEWAY_API_KEY": "g"}, "typesafe", None, None),
+        ({"TYPESAFE_API_KEY": "t"}, "gateway", None, None),
+        ({"TYPESAFE_API_KEY": "t", "AI_GATEWAY_API_KEY": "g"}, "gateway", "gateway", _GW_URL),
+        ({"TYPESAFE_API_KEY": "t", "AI_GATEWAY_API_KEY": "g"}, "bogus", "typesafe", _TS_URL),
+    ]
+    for keys, backend, want, url in cases:
+        steps = [("ok", _GW_BODY)] if want else []
+        client, script, _ = _enter(_run_dual(keys, backend=backend, _steps=steps))
+        try:
+            assert C.resolve_backend(backend) == want, (keys, backend, want)
+            res = client.evaluate({"request": "x"}, _Q)
+            if want is None:
+                assert res is None and script.calls == [], (keys, backend)
+            else:
+                assert res is not None and len(script.calls) == 1, (keys, backend)
+                assert script.calls[0][0] == url, script.calls[0][0]
+        finally:
+            _leave(client)
+    print("ok  backend auto|typesafe|gateway resolve e silencia sem chave")
+
+
+def test_retry_after_seconds():
+    client, script, clock = _enter(
+        _run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("http", 429, "1"), ("ok", _GW_BODY)])
+    )
+    try:
+        res = client.evaluate({"request": "x"}, _Q)
+        assert res is not None and len(script.calls) == 2, script.calls
+        assert clock.sleeps == [1.0], clock.sleeps
+    finally:
+        _leave(client)
+    print("ok  retry honrou Retry-After em segundos (1 retry)")
+
+
+def test_retry_after_http_date():
+    when = _email_utils.formatdate(_time.time() + 1, usegmt=True)
+    client, script, clock = _enter(
+        _run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("http", 429, when), ("ok", _GW_BODY)])
+    )
+    try:
+        res = client.evaluate({"request": "x"}, _Q)
+        assert res is not None and len(script.calls) == 2, script.calls
+        assert len(clock.sleeps) == 1 and 0 < clock.sleeps[0] <= 2.0, clock.sleeps
+    finally:
+        _leave(client)
+    print("ok  retry honrou Retry-After como data HTTP")
+
+
+def test_retry_after_garbage():
+    client, script, clock = _enter(
+        _run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("http", 429, "banana")])
+    )
+    try:
+        assert C.retry_after_s("banana", _time.time()) is None
+        assert C.retry_after_s("", _time.time()) is None
+        assert C.retry_after_s(None, _time.time()) is None
+        assert client.evaluate({"request": "x"}, _Q) is None
+        assert len(script.calls) == 1 and clock.sleeps == [], (script.calls, clock.sleeps)
+    finally:
+        _leave(client)
+    print("ok  Retry-After lixo: sem retry, fail-open")
+
+
+def test_retry_after_too_long():
+    client, script, clock = _enter(
+        _run_dual(
+            {"AI_GATEWAY_API_KEY": "g"},
+            retry_max_wait_s=2.0,
+            _steps=[("http", 429, "30")],
+        )
+    )
+    try:
+        assert client.evaluate({"request": "x"}, _Q) is None
+        assert len(script.calls) == 1 and clock.sleeps == [], (script.calls, clock.sleeps)
+    finally:
+        _leave(client)
+    print("ok  espera acima do teto: sem retry, fail-open")
+
+
+def test_retry_529():
+    client, script, clock = _enter(
+        _run_dual({"TYPESAFE_API_KEY": "t"}, _steps=[("http", 529, "1"), ("ok", _TS_BODY)])
+    )
+    try:
+        res = client.evaluate({"request": "x"}, _Q)
+        assert res is not None and len(script.calls) == 2, script.calls
+        assert res["answers"]["destructive"] == {"type": "boolean", "probability": 0.97}, res
+    finally:
+        _leave(client)
+    print("ok  529 tratado como rate limit (1 retry)")
+
+
+def test_retry_only_once():
+    client, script, clock = _enter(
+        _run_dual(
+            {"AI_GATEWAY_API_KEY": "g"},
+            _steps=[("http", 429, "1"), ("http", 429, "1"), ("ok", _GW_BODY)],
+        )
+    )
+    try:
+        assert client.evaluate({"request": "x"}, _Q) is None
+        assert len(script.calls) == 2, script.calls  # nunca em loop
+    finally:
+        _leave(client)
+    print("ok  retry único: segundo 429 não tenta de novo")
+
+
+def test_breaker_opens_and_recovers():
+    client, script, clock = _enter(
+        _run_dual(
+            {"AI_GATEWAY_API_KEY": "g"},
+            breaker_threshold=3,
+            breaker_cooldown_s=120,
+            _steps=[("http", 429, "lixo")] * 3,
+        )
+    )
+    try:
+        for i in range(3):
+            assert client.evaluate({"request": i}, _Q) is None
+        assert len(script.calls) == 3, script.calls
+        # Breaker aberto: silêncio sem tocar o transporte.
+        assert client.evaluate({"request": 99}, _Q) is None
+        assert len(script.calls) == 3, script.calls
+        # Cooldown passou: volta a tentar; sucesso zera o contador.
+        clock.t += 121
+        script.steps.append(("ok", _GW_BODY))
+        assert client.evaluate({"request": 100}, _Q) is not None
+        assert len(script.calls) == 4, script.calls
+        script.steps.extend([("http", 429, "lixo")] * 2)
+        assert client.evaluate({"request": 101}, _Q) is None
+        assert client.evaluate({"request": 102}, _Q) is None
+        assert len(script.calls) == 6, script.calls  # 2 falhas pós-sucesso não abrem
+    finally:
+        _leave(client)
+    print("ok  breaker abriu após 3, recuperou após cooldown, sucesso zerou")
+
+
+def test_min_interval_spacing():
+    client, script, clock = _enter(
+        _run_dual(
+            {"AI_GATEWAY_API_KEY": "g"},
+            min_interval_s=0.25,
+            _steps=[("ok", _GW_BODY), ("ok", _GW_BODY)],
+        )
+    )
+    try:
+        assert client.evaluate({"request": 1}, _Q) is not None
+        assert client.evaluate({"request": 2}, _Q) is not None
+        assert clock.sleeps == [0.25], clock.sleeps
+    finally:
+        _leave(client)
+    print("ok  min_interval_s espaçou chamadas (clock mockado)")
+
+
+def test_silence_without_key():
+    client, script, _ = _enter(_run_dual({}, _steps=[("ok", _GW_BODY)]))
+    try:
+        assert client.evaluate({"request": "x"}, _Q) is None
+        assert script.calls == [], script.calls
+    finally:
+        _leave(client)
+    print("ok  sem chave nenhuma: silencioso, transporte intocado")
 
 
 if __name__ == "__main__":
@@ -372,6 +765,20 @@ if __name__ == "__main__":
         test_register_hook_and_command,
         test_hook_fail_open,
         test_cli_status_and_check,
+        test_settings_dual_defaults,
+        test_hook_auto_silent_without_key,
+        test_typesafe_noul_mapping,
+        test_gateway_confidence_and_cost,
+        test_backend_selection,
+        test_retry_after_seconds,
+        test_retry_after_http_date,
+        test_retry_after_garbage,
+        test_retry_after_too_long,
+        test_retry_529,
+        test_retry_only_once,
+        test_breaker_opens_and_recovers,
+        test_min_interval_spacing,
+        test_silence_without_key,
     ):
         fn()
     print("\ntodos os testes offline passaram")

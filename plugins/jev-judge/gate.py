@@ -25,7 +25,16 @@ def settings_for(ctx) -> dict:
         "mode": ctx.get_config("mode", default="shadow"),
         "tools": ctx.get_config("tools", default=["terminal", "write_file", "patch"]),
         "timeout_s": ctx.get_config("timeout_s", default=3.0),
-        "cache_seconds": ctx.get_config("cache_seconds", default=120),
+        "cache_seconds": ctx.get_config("cache_seconds", default=300),
+        "backend": ctx.get_config("backend", default="auto"),
+        "typesafe_model": ctx.get_config("typesafe_model", default="jev-latest"),
+        "typesafe_base_url": ctx.get_config(
+            "typesafe_base_url", default="https://api.typesafe.ai"
+        ),
+        "retry_max_wait_s": ctx.get_config("retry_max_wait_s", default=2.0),
+        "breaker_threshold": ctx.get_config("breaker_threshold", default=3),
+        "breaker_cooldown_s": ctx.get_config("breaker_cooldown_s", default=120),
+        "min_interval_s": ctx.get_config("min_interval_s", default=0.25),
         "destructive_threshold": ctx.get_config(
             "destructive_threshold", default=0.90
         ),
@@ -48,10 +57,27 @@ def client_for(s: dict) -> JevClient:
         s["jev_model"],
         float(s["timeout_s"]),
         int(s["cache_seconds"]),
+        str(s.get("backend", "auto")),
+        str(s.get("typesafe_model", "jev-latest")),
+        str(s.get("typesafe_base_url", "https://api.typesafe.ai")),
+        float(s.get("retry_max_wait_s", 2.0)),
+        int(s.get("breaker_threshold", 3)),
+        float(s.get("breaker_cooldown_s", 120)),
+        float(s.get("min_interval_s", 0.25)),
     )
     if key not in _clients:
         _clients[key] = JevClient(
-            base_url=key[0], model=key[1], timeout=key[2], cache_seconds=key[3]
+            base_url=key[0],
+            model=key[1],
+            timeout=key[2],
+            cache_seconds=key[3],
+            backend=key[4],
+            typesafe_model=key[5],
+            typesafe_base_url=key[6],
+            retry_max_wait_s=key[7],
+            breaker_threshold=key[8],
+            breaker_cooldown_s=key[9],
+            min_interval_s=key[10],
         )
     return _clients[key]
 

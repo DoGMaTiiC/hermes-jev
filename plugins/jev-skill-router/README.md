@@ -4,8 +4,17 @@
 Hermes Agent: before the model call, Jev names **at most one** skill from the
 live roster for the current turn, and the plugin injects a single
 `<skill_relevance>` line into the user-message context. It says nothing when
-nothing fits. Via the [Vercel AI Gateway](https://vercel.com/docs/ai-gateway/modalities/evaluation)
-(`typesafe-ai/jev`) — pure stdlib, no Node, no SDK.
+nothing fits. Two routes, picked by the `backend` setting (`auto` by
+default: `TYPESAFE_API_KEY` wins, else `AI_GATEWAY_API_KEY`) — pure stdlib,
+no Node, no SDK.
+
+| Route | Endpoint | Key | Questions | Confidence | Cost |
+| ----- | -------- | --- | --------- | ---------- | ---- |
+| TypeSafe direto | `POST https://api.typesafe.ai/v1/systemone` (`model: jev-latest`) | `TYPESAFE_API_KEY` | `noul` / `choice` / `score` | inline per answer | none (`usage` in tokens) |
+| Vercel AI Gateway | `POST {jev_base_url}/evaluation-model` (`typesafe-ai/jev`) | `AI_GATEWAY_API_KEY` | `boolean` / `choice` / `score` | `providerMetadata.typesafe.confidence` | `providerMetadata.gateway.cost` |
+
+Yes/no questions are `boolean` internally and mapped to `noul` on the
+TypeSafe wire; answers come back normalized.
 
 ## What it does
 
@@ -28,7 +37,9 @@ hermes plugins install DoGMaTiiC/hermes-jev-skill-router
 hermes jev-skill-router auto   # or: on
 ```
 
-Requires `AI_GATEWAY_API_KEY` (Vercel AI Gateway key) and Hermes ≥ 0.21.
+Requires `TYPESAFE_API_KEY` (direct) and/or `AI_GATEWAY_API_KEY` (Vercel AI
+Gateway key) and Hermes ≥ 0.21. No key at all: the plugin loads and stays
+silent.
 
 ## Settings
 
@@ -43,8 +54,15 @@ Requires `AI_GATEWAY_API_KEY` (Vercel AI Gateway key) and Hermes ≥ 0.21.
 | `chunk`         | `240`                                      | Skills per Choice question (API caps one at 255)     |
 | `excerpt`       | `700`                                      | SKILL.md characters each candidate brings            |
 | `timeout_s`     | `4.0`                                      | Wall-clock budget per Jev call (fail-open past it)   |
+| `backend`       | `auto`                                     | `auto` = TypeSafe key wins, else gateway · `typesafe`/`gateway` forces one |
+| `typesafe_model` | `jev-latest`                              | TypeSafe direto model                                |
+| `typesafe_base_url` | `https://api.typesafe.ai`               | TypeSafe direto endpoint override                    |
+| `retry_max_wait_s` | `2.0`                                  | Retry once on 429/529 only if Retry-After waits at most this |
+| `breaker_threshold` | `3`                                   | Consecutive 429/529s before going silent             |
+| `breaker_cooldown_s` | `120`                                | Silence window after the breaker opens               |
+| `min_interval_s` | `0.25`                                 | Minimum gap between outgoing Jev calls, per process  |
 | `suggest_chars` | `4000`                                     | Longer user messages are left alone                  |
-| `jev_model`     | `typesafe-ai/jev`                          | Endpoint override (prefixed: the loader rejects bare `model`) |
+| `jev_model`     | `typesafe-ai/jev`                          | Gateway override (prefixed: the loader rejects bare `model`) |
 | `jev_base_url`  | `https://ai-gateway.vercel.sh/v4/ai`       | Endpoint override (prefixed: the loader rejects bare `base_url`) |
 | `roster_dir`    | `<HERMES_HOME>/skills`                     | Where SKILL.md files are scanned                     |
 | `log_path`      | `<HERMES_HOME>/logs/jev-skill-router.log`  | JSONL decision log                                   |
@@ -58,13 +76,24 @@ memory, or tool output.
 
 ## Cost / latency
 
-About 2 Jev calls per eligible turn — roughly $0.00002 and ~1 s. Ineligible
+About 2 Jev calls per eligible turn — roughly $0.00002 on the gateway
+(TypeSafe direto bills in tokens, no per-call $) and ~1 s. Ineligible
 turns (slash, empty, long, already routed) and `mode: off` cost nothing.
 
 ## Fail-open, always
 
-Missing key, timeout, HTTP error, malformed body — the hook returns nothing
-and the turn proceeds exactly as today.
+Missing key for the selected backend, timeout, HTTP error, malformed body —
+the hook returns nothing and the turn proceeds exactly as today.
+
+## Under rate limit
+
+The gateway free tier limits per model; TypeSafe direto has no gateway
+limiter. On 429/529 the client reads `Retry-After` (seconds or HTTP date;
+garbage is ignored) and retries **once** if the wait fits in
+`retry_max_wait_s` (2.0s) — never in a loop. After `breaker_threshold` (3)
+consecutive 429/529s the endpoint goes silent for `breaker_cooldown_s`
+(120s); any success resets the count. Outgoing calls are spaced
+`min_interval_s` (0.25s) apart per process.
 
 ## Off switch
 

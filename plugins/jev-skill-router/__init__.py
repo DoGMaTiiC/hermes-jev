@@ -62,6 +62,16 @@ def _settings(ctx) -> dict:
         "excerpt": num("excerpt", 700, int),
         "timeout_s": num("timeout_s", 4.0, float),
         "suggest_chars": num("suggest_chars", 4000, int),
+        "backend": str(ctx.get_config("backend", "auto") or "auto"),
+        "typesafe_model": str(ctx.get_config("typesafe_model", "jev-latest") or "jev-latest"),
+        "typesafe_base_url": str(
+            ctx.get_config("typesafe_base_url", "https://api.typesafe.ai")
+            or "https://api.typesafe.ai"
+        ),
+        "retry_max_wait_s": num("retry_max_wait_s", 2.0, float),
+        "breaker_threshold": num("breaker_threshold", 3, int),
+        "breaker_cooldown_s": num("breaker_cooldown_s", 120, float),
+        "min_interval_s": num("min_interval_s", 0.25, float),
         "jev_model": str(ctx.get_config("jev_model", "typesafe-ai/jev") or "typesafe-ai/jev"),
         "jev_base_url": str(
             ctx.get_config("jev_base_url", "https://ai-gateway.vercel.sh/v4/ai")
@@ -145,6 +155,15 @@ def decide(settings: dict, text: str, *, client=None, source: str = "hook"):
                 base_url=settings["jev_base_url"],
                 model=settings["jev_model"],
                 timeout=float(settings["timeout_s"]),
+                backend=str(settings.get("backend", "auto")),
+                typesafe_model=str(settings.get("typesafe_model", "jev-latest")),
+                typesafe_base_url=str(
+                    settings.get("typesafe_base_url", "https://api.typesafe.ai")
+                ),
+                retry_max_wait_s=float(settings.get("retry_max_wait_s", 2.0)),
+                breaker_threshold=int(settings.get("breaker_threshold", 3)),
+                breaker_cooldown_s=float(settings.get("breaker_cooldown_s", 120)),
+                min_interval_s=float(settings.get("min_interval_s", 0.25)),
             )
         result = _router_mod.suggest(
             live,
@@ -183,8 +202,10 @@ def make_hook_handler(ctx):
             settings = _settings(ctx)
             if settings["mode"] == "off":
                 return None
-            if settings["mode"] == "auto" and not _client_mod.api_key():
-                return None  # auto routes only when the key is present
+            if settings["mode"] == "auto" and not _client_mod.resolve_backend(
+                settings.get("backend", "auto")
+            ):
+                return None  # auto routes only when a key for the backend is present
             if settings["mode"] not in ("auto", "on"):
                 return None
             text = kwargs.get("user_message")
@@ -216,15 +237,19 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
 
 def _cmd_status(ctx, settings: dict) -> int:
     skills = get_roster(settings)
-    key = "present" if _client_mod.api_key() else "missing"
+    backend = _client_mod.resolve_backend(settings.get("backend", "auto"))
+    gw = "present" if _client_mod.api_key() else "missing"
+    ts = "present" if _client_mod.typesafe_api_key() else "missing"
     print(f"mode:          {settings['mode']}")
     print(f"roster:        {len(skills)} skills from {roster_dir(settings)}")
     print(f"gate/fits:     {settings['gate']}/{settings['fits']}")
     print(f"shortlist:     {settings['shortlist']}  chunk: {settings['chunk']}  "
           f"excerpt: {settings['excerpt']}")
     print(f"timeout:       {settings['timeout_s']}s  suggest_chars: {settings['suggest_chars']}")
+    print(f"backend:       {settings.get('backend', 'auto')} (resolved: {backend or 'silent'})")
     print(f"endpoint:      {settings['jev_model']} @ {settings['jev_base_url']}")
-    print(f"key:           {key} (AI_GATEWAY_API_KEY)")
+    print(f"typesafe:      {settings.get('typesafe_model', 'jev-latest')} @ {settings.get('typesafe_base_url', 'https://api.typesafe.ai')}")
+    print(f"keys:          TYPESAFE_API_KEY={ts}  AI_GATEWAY_API_KEY={gw}")
     print(f"log:           {log_file(settings)}")
     return 0
 
@@ -253,8 +278,8 @@ def _cmd_suggest(ctx, settings: dict, args) -> int:
 
 def _cmd_check(ctx, settings: dict) -> int:
     ok = True
-    key = _client_mod.api_key()
-    print(f"key:    {'OK (present)' if key else 'MISSING (AI_GATEWAY_API_KEY)'}")
+    key = _client_mod.resolve_backend(settings.get("backend", "auto"))
+    print(f"backend: {'OK (' + key + ')' if key else 'SILENT (no key for backend ' + str(settings.get('backend', 'auto')) + ')'}")
     ok = ok and bool(key)
     try:
         skills = get_roster(settings)

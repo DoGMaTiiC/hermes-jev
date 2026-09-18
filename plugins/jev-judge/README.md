@@ -5,8 +5,18 @@ Hermes Agent: a **pre-tool gate** and a **jev_ask** tool. Jev answers typed
 questions (boolean / choice / score) with probabilities — no prose, no parsing.
 
 Adapted from [pi-jev](https://github.com/y0usaf/pi-jev) (Pi coding agent) to
-Hermes hooks. Via the [Vercel AI Gateway](https://vercel.com/docs/ai-gateway/modalities/evaluation)
-(`typesafe-ai/jev`, $0.04/M input, output free) — pure stdlib, no Node needed.
+Hermes hooks. Two routes, picked by the `backend` setting (`auto` by
+default: `TYPESAFE_API_KEY` wins, else `AI_GATEWAY_API_KEY`):
+
+| Route | Endpoint | Key | Questions | Confidence | Cost |
+| ----- | -------- | --- | --------- | ---------- | ---- |
+| TypeSafe direto | `POST https://api.typesafe.ai/v1/systemone` (`model: jev-latest`) | `TYPESAFE_API_KEY` | `noul` / `choice` / `score` | inline per answer | none (`usage` in tokens) |
+| Vercel AI Gateway | `POST {jev_base_url}/evaluation-model` (`typesafe-ai/jev`) | `AI_GATEWAY_API_KEY` | `boolean` / `choice` / `score` | `providerMetadata.typesafe.confidence` | `providerMetadata.gateway.cost` |
+
+Yes/no questions are `boolean` internally and mapped to `noul` on the
+TypeSafe wire; answers come back normalized (`{probability}` /
+`{choice, probabilities, confidence}` / `{score, probabilities, confidence}`).
+Pure stdlib, no Node needed.
 
 ## What it does
 
@@ -24,9 +34,21 @@ impact if unwanted?_ Every decision lands in a JSONL log.
 
 ## Fail-open, always
 
-No key, timeout (3s), HTTP 429/5xx, malformed body — the gate returns nothing
-and the tool call proceeds exactly as today. Logic is in `gate.judge()`; every
-question is atomic and thresholds are applied in code, never by the model.
+No key for the selected backend, timeout (3s), HTTP error, malformed body —
+the gate returns nothing and the tool call proceeds exactly as today. Logic
+is in `gate.judge()`; every question is atomic and thresholds are applied in
+code, never by the model.
+
+## Under rate limit
+
+The gateway free tier limits per model; TypeSafe direto has no gateway
+limiter. On 429/529 the client reads `Retry-After` (seconds or HTTP date;
+garbage is ignored) and retries **once** if the wait fits in
+`retry_max_wait_s` (2.0s) — never in a loop. After `breaker_threshold` (3)
+consecutive 429/529s the endpoint goes silent for `breaker_cooldown_s`
+(120s); any success resets the count. Outgoing calls are spaced
+`min_interval_s` (0.25s) apart per process, and identical calls share one
+cached judgment for `cache_seconds` (300s).
 
 ## Settings
 
@@ -37,14 +59,21 @@ question is atomic and thresholds are applied in code, never by the model.
 | `mode`                   | `shadow`                           | `shadow` = log only · `enforce` = escalate triggered calls |
 | `tools`                  | `[terminal, write_file, patch]`    | Tools the gate judges                                      |
 | `timeout_s`              | `3.0`                              | Wall-clock budget per Jev call                             |
-| `cache_seconds`          | `120`                              | Identical calls judged once per window                     |
+| `cache_seconds`          | `300`                              | Identical calls judged once per window                     |
+| `backend`                | `auto`                             | `auto` = TypeSafe key wins, else gateway · `typesafe`/`gateway` forces one |
+| `typesafe_model` / `typesafe_base_url` | `jev-latest` / `https://api.typesafe.ai` | TypeSafe direto endpoint overrides |
+| `retry_max_wait_s`       | `2.0`                              | Retry once on 429/529 only if Retry-After waits at most this |
+| `breaker_threshold`      | `3`                                | Consecutive 429/529s before going silent                   |
+| `breaker_cooldown_s`     | `120`                              | Silence window after the breaker opens                     |
+| `min_interval_s`         | `0.25`                             | Minimum gap between outgoing Jev calls, per process        |
 | `destructive_threshold`  | `0.90`                             | P(true) that triggers                                      |
 | `exfiltration_threshold` | `0.70`                             | P(true) that triggers                                      |
 | `impact_threshold`       | `2.5`                              | Score that triggers (0–3 scale)                            |
-| `jev_model` / `jev_base_url` | `typesafe-ai/jev` / AI Gateway | Endpoint overrides (prefixed: the loader rejects bare `model`/`base_url`, root is reserved) |
+| `jev_model` / `jev_base_url` | `typesafe-ai/jev` / AI Gateway | Gateway endpoint overrides (prefixed: the loader rejects bare `model`/`base_url`, root is reserved) |
 | `log_path`               | `<HERMES_HOME>/logs/jev-judge.log` | JSONL decision log                                         |
 
-Requires `AI_GATEWAY_API_KEY` (Vercel AI Gateway). Fail-open without it.
+Needs `TYPESAFE_API_KEY` (direct) and/or `AI_GATEWAY_API_KEY` (Vercel AI
+Gateway). No key at all: the plugin loads and stays silent (fail-open).
 
 ## What leaves your machine
 
