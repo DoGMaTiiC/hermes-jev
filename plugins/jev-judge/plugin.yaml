@@ -19,7 +19,7 @@ config_schema:
   timeout_s:
     type: float
     default: 3.0
-    description: "Wall-clock budget per Jev call (fail-open on timeout)"
+    description: "Per-attempt timeout; worst case per call is 2x this plus retry_max_wait_s"
   cache_seconds:
     type: int
     default: 300

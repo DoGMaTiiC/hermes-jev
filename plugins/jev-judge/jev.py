@@ -12,6 +12,7 @@ import email.utils
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -120,6 +121,8 @@ def to_typesafe_questions(questions: dict) -> dict:
                 "type": "noul",
                 "instructions": question.get("instructions", ""),
             }
+            if "criteria" in question:
+                out[qid]["criteria"] = question["criteria"]
         else:
             out[qid] = question
     return out
@@ -162,9 +165,11 @@ def retry_after_s(value, now_wall: float) -> float | None:
     if not text:
         return None
     try:
-        return float(text)
+        wait = float(text)
     except ValueError:
         pass
+    else:
+        return wait if math.isfinite(wait) else None
     try:
         moment = email.utils.parsedate_to_datetime(text)
     except (TypeError, ValueError):
@@ -173,7 +178,8 @@ def retry_after_s(value, now_wall: float) -> float | None:
         return None
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
-    return moment.timestamp() - now_wall
+    delta = moment.timestamp() - now_wall
+    return delta if math.isfinite(delta) else None
 
 
 class JevClient:
@@ -277,8 +283,7 @@ class JevClient:
             try:
                 body = self._send(url, data, headers)
             except urllib.error.HTTPError as exc2:
-                if exc2.code in RATE_LIMIT_CODES:
-                    self._note_ratelimit(url)
+                # Counted once per evaluate (first 429/529 above); no double note.
                 logger.debug(
                     "jev-judge: retry failed (%s): %s", type(exc2).__name__, exc2
                 )

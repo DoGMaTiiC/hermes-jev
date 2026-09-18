@@ -499,6 +499,7 @@ def test_settings_dual_defaults():
     assert s["breaker_threshold"] == 3, s
     assert s["breaker_cooldown_s"] == 120, s
     assert s["min_interval_s"] == 0.25, s
+    assert s["cache_seconds"] == 300, s
     print("ok  settings com defaults do backend duplo")
 
 
@@ -745,6 +746,80 @@ def test_silence_without_key():
     print("ok  sem chave nenhuma: silencioso, transporte intocado")
 
 
+def test_retry_after_nonfinite():
+    now = _time.time()
+    assert C.retry_after_s("nan", now) is None
+    assert C.retry_after_s("inf", now) is None
+    assert C.retry_after_s("-inf", now) is None
+    client, script, clock = _enter(
+        _run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("http", 429, "nan")])
+    )
+    try:
+        assert client.evaluate({"request": "x"}, _Q) is None
+        assert len(script.calls) == 1 and clock.sleeps == [], (script.calls, clock.sleeps)
+    finally:
+        _leave(client)
+    print("ok  Retry-After nan/inf: sem retry, fail-open")
+
+
+def test_breaker_counts_once_per_evaluate():
+    client, script, clock = _enter(
+        _run_dual(
+            {"AI_GATEWAY_API_KEY": "g"},
+            breaker_threshold=4,
+            _steps=[("http", 429, "1"), ("http", 429, "1")] * 3,
+        )
+    )
+    try:
+        for i in range(3):
+            assert client.evaluate({"request": i}, _Q) is None
+        # 3 evaluates x 2 attempts; breaker counts 1 per evaluate, still closed.
+        assert len(script.calls) == 6, script.calls
+        script.steps.append(("http", 429, "lixo"))
+        assert client.evaluate({"request": 99}, _Q) is None
+        assert len(script.calls) == 7, script.calls
+    finally:
+        _leave(client)
+    print("ok  breaker conta 1 por evaluate (429+429 sem retry duplo)")
+
+
+def test_boolean_criteria_passthrough():
+    out = C.to_typesafe_questions(
+        {
+            "q": {
+                "type": "boolean",
+                "instructions": "?",
+                "criteria": {"true": "loss", "false": "safe"},
+            }
+        }
+    )
+    assert out == {
+        "q": {"type": "noul", "instructions": "?", "criteria": {"true": "loss", "false": "safe"}}
+    }, out
+    plain = C.to_typesafe_questions({"q": {"type": "boolean", "instructions": "?"}})
+    assert plain == {"q": {"type": "noul", "instructions": "?"}}, plain
+    print("ok  criteria propagado no boolean->noul")
+
+
+def test_cache_ttl():
+    client, script, _ = _enter(
+        _run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("ok", _GW_BODY), ("ok", _GW_BODY)])
+    )
+    try:
+        assert client.cache_seconds == 300, client.cache_seconds
+        assert client.evaluate({"request": "x"}, _Q) is not None
+        assert client.evaluate({"request": "x"}, _Q) is not None
+        assert len(script.calls) == 1, script.calls  # hit within TTL
+        for key in list(client._cache):
+            _, result = client._cache[key]
+            client._cache[key] = (0.0, result)  # force expiry
+        assert client.evaluate({"request": "x"}, _Q) is not None
+        assert len(script.calls) == 2, script.calls
+    finally:
+        _leave(client)
+    print("ok  cache do router com TTL: hit dentro, miss fora")
+
+
 if __name__ == "__main__":
     for fn in (
         test_frontmatter_quoted,
@@ -779,6 +854,10 @@ if __name__ == "__main__":
         test_breaker_opens_and_recovers,
         test_min_interval_spacing,
         test_silence_without_key,
+        test_retry_after_nonfinite,
+        test_breaker_counts_once_per_evaluate,
+        test_boolean_criteria_passthrough,
+        test_cache_ttl,
     ):
         fn()
     print("\ntodos os testes offline passaram")

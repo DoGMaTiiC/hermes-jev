@@ -395,6 +395,7 @@ def test_typesafe_noul_mapping():
         assert payload["questions"]["destructive"] == {
             "type": "noul",
             "instructions": "Is it destructive?",
+            "criteria": {"true": "loss", "false": "safe"},
         }, payload["questions"]["destructive"]
         assert payload["questions"]["pick"]["type"] == "choice"
         assert res["answers"]["destructive"] == {"type": "boolean", "probability": 0.97}, res
@@ -611,6 +612,61 @@ def test_silence_without_key():
     print("ok  sem chave nenhuma: silencioso, transporte intocado")
 
 
+def test_retry_after_nonfinite():
+    now = _time.time()
+    assert jev.retry_after_s("nan", now) is None
+    assert jev.retry_after_s("inf", now) is None
+    assert jev.retry_after_s("-inf", now) is None
+    client, script, clock = _enter(
+        _run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("http", 429, "nan")])
+    )
+    try:
+        assert client.evaluate({"a": 1}, {"q": {"type": "boolean", "instructions": "?"}}) is None
+        assert len(script.calls) == 1 and clock.sleeps == [], (script.calls, clock.sleeps)
+    finally:
+        _leave(client)
+    print("ok  Retry-After nan/inf: sem retry, fail-open")
+
+
+def test_breaker_counts_once_per_evaluate():
+    client, script, clock = _enter(
+        _run_dual(
+            {"AI_GATEWAY_API_KEY": "g"},
+            breaker_threshold=4,
+            _steps=[("http", 429, "1"), ("http", 429, "1")] * 3,
+        )
+    )
+    try:
+        for i in range(3):
+            assert client.evaluate({"n": i}, {"q": {"type": "boolean", "instructions": "?"}}) is None
+        # 3 evaluates x 2 attempts; breaker counts 1 per evaluate, still closed.
+        assert len(script.calls) == 6, script.calls
+        script.steps.append(("http", 429, "lixo"))
+        assert client.evaluate({"n": 99}, {"q": {"type": "boolean", "instructions": "?"}}) is None
+        assert len(script.calls) == 7, script.calls
+    finally:
+        _leave(client)
+    print("ok  breaker conta 1 por evaluate (429+429 sem retry duplo)")
+
+
+def test_boolean_criteria_passthrough():
+    out = jev.to_typesafe_questions(
+        {
+            "q": {
+                "type": "boolean",
+                "instructions": "?",
+                "criteria": {"true": "loss", "false": "safe"},
+            }
+        }
+    )
+    assert out == {
+        "q": {"type": "noul", "instructions": "?", "criteria": {"true": "loss", "false": "safe"}}
+    }, out
+    plain = jev.to_typesafe_questions({"q": {"type": "boolean", "instructions": "?"}})
+    assert plain == {"q": {"type": "noul", "instructions": "?"}}, plain
+    print("ok  criteria propagado no boolean->noul")
+
+
 if __name__ == "__main__":
     for fn in (
         test_redact,
@@ -633,6 +689,9 @@ if __name__ == "__main__":
         test_breaker_opens_and_recovers,
         test_min_interval_spacing,
         test_silence_without_key,
+        test_retry_after_nonfinite,
+        test_breaker_counts_once_per_evaluate,
+        test_boolean_criteria_passthrough,
     ):
         fn()
     print("\ntodos os testes offline passaram")

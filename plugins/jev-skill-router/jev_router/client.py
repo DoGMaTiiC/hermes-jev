@@ -12,6 +12,7 @@ import email.utils
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -86,6 +87,8 @@ def to_typesafe_questions(questions: dict) -> dict:
                 "type": "noul",
                 "instructions": question.get("instructions", ""),
             }
+            if "criteria" in question:
+                out[qid]["criteria"] = question["criteria"]
         else:
             out[qid] = question
     return out
@@ -128,9 +131,11 @@ def retry_after_s(value, now_wall: float) -> float | None:
     if not text:
         return None
     try:
-        return float(text)
+        wait = float(text)
     except ValueError:
         pass
+    else:
+        return wait if math.isfinite(wait) else None
     try:
         moment = email.utils.parsedate_to_datetime(text)
     except (TypeError, ValueError):
@@ -139,7 +144,8 @@ def retry_after_s(value, now_wall: float) -> float | None:
         return None
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
-    return moment.timestamp() - now_wall
+    delta = moment.timestamp() - now_wall
+    return delta if math.isfinite(delta) else None
 
 
 class JevClient:
@@ -150,6 +156,7 @@ class JevClient:
         base_url: str = DEFAULT_BASE_URL,
         model: str = DEFAULT_MODEL,
         timeout: float = 4.0,
+        cache_seconds: int = 300,
         backend: str = "auto",
         typesafe_model: str = DEFAULT_TYPESAFE_MODEL,
         typesafe_base_url: str = DEFAULT_TYPESAFE_BASE_URL,
@@ -161,6 +168,7 @@ class JevClient:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = float(timeout)
+        self.cache_seconds = int(cache_seconds)
         self.backend = backend
         self.typesafe_model = typesafe_model
         self.typesafe_base_url = typesafe_base_url.rstrip("/")
@@ -168,7 +176,7 @@ class JevClient:
         self.breaker_threshold = int(breaker_threshold)
         self.breaker_cooldown_s = float(breaker_cooldown_s)
         self.min_interval_s = float(min_interval_s)
-        self._cache: dict[str, dict] = {}
+        self._cache: dict[str, tuple[float, dict]] = {}
         # Seams for offline tests (transport stub, clock mock).
         self._urlopen = urllib.request.urlopen
         self._clock = time.monotonic
@@ -243,8 +251,7 @@ class JevClient:
             try:
                 body = self._send(url, data, headers)
             except urllib.error.HTTPError as exc2:
-                if exc2.code in RATE_LIMIT_CODES:
-                    self._note_ratelimit(url)
+                # Counted once per evaluate (first 429/529 above); no double note.
                 logger.debug(
                     "jev-skill-router: retry failed (%s): %s",
                     type(exc2).__name__,
@@ -280,8 +287,10 @@ class JevClient:
                 default=str,
             ).encode()
         ).hexdigest()
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        now = time.time()
+        hit = self._cache.get(cache_key)
+        if hit and hit[0] > now:
+            return hit[1]
 
         if backend == "typesafe":
             endpoint = f"{self.typesafe_base_url}/v1/systemone"
@@ -341,5 +350,5 @@ class JevClient:
                 "usage": body.get("usage"),
                 "latency_ms": round((self._clock() - started) * 1000),
             }
-        self._cache[cache_key] = result
+        self._cache[cache_key] = (now + self.cache_seconds, result)
         return result

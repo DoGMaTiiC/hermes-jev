@@ -61,6 +61,7 @@ def _settings(ctx) -> dict:
         "chunk": num("chunk", 240, int),
         "excerpt": num("excerpt", 700, int),
         "timeout_s": num("timeout_s", 4.0, float),
+        "cache_seconds": num("cache_seconds", 300, int),
         "suggest_chars": num("suggest_chars", 4000, int),
         "backend": str(ctx.get_config("backend", "auto") or "auto"),
         "typesafe_model": str(ctx.get_config("typesafe_model", "jev-latest") or "jev-latest"),
@@ -155,6 +156,7 @@ def decide(settings: dict, text: str, *, client=None, source: str = "hook"):
                 base_url=settings["jev_base_url"],
                 model=settings["jev_model"],
                 timeout=float(settings["timeout_s"]),
+                cache_seconds=int(settings.get("cache_seconds", 300)),
                 backend=str(settings.get("backend", "auto")),
                 typesafe_model=str(settings.get("typesafe_model", "jev-latest")),
                 typesafe_base_url=str(

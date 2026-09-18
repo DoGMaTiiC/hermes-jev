@@ -18,6 +18,8 @@ TypeSafe wire; answers come back normalized (`{probability}` /
 `{choice, probabilities, confidence}` / `{score, probabilities, confidence}`).
 Pure stdlib, no Node needed.
 
+Rota TypeSafe implementada conforme a doc; ainda não exercitada ao vivo (sem chave disponível).
+
 ## What it does
 
 **Gate** (`pre_tool_call`, shadow by default): before `terminal`, `write_file`
@@ -43,12 +45,16 @@ code, never by the model.
 
 The gateway free tier limits per model; TypeSafe direto has no gateway
 limiter. On 429/529 the client reads `Retry-After` (seconds or HTTP date;
-garbage is ignored) and retries **once** if the wait fits in
-`retry_max_wait_s` (2.0s) — never in a loop. After `breaker_threshold` (3)
-consecutive 429/529s the endpoint goes silent for `breaker_cooldown_s`
-(120s); any success resets the count. Outgoing calls are spaced
-`min_interval_s` (0.25s) apart per process, and identical calls share one
-cached judgment for `cache_seconds` (300s).
+garbage and non-finite values like `nan`/`inf` are ignored) and retries
+**once** if the wait fits in `retry_max_wait_s` (2.0s) — never in a loop.
+After `breaker_threshold` (3) consecutive 429/529s the endpoint goes silent
+for `breaker_cooldown_s` (120s); any success resets the count. The breaker
+counts one rate-limit event per call, even when the retry is limited too.
+Outgoing calls are spaced `min_interval_s` (0.25s) apart per process, and
+identical calls share one cached judgment for `cache_seconds` (300s).
+
+Wall-clock budget: `timeout_s` bounds each attempt, so one call with a
+retry can take up to ~2×`timeout_s` + `retry_max_wait_s` (~8s at defaults).
 
 ## Settings
 
@@ -58,7 +64,7 @@ cached judgment for `cache_seconds` (300s).
 | ------------------------ | ---------------------------------- | ---------------------------------------------------------- |
 | `mode`                   | `shadow`                           | `shadow` = log only · `enforce` = escalate triggered calls |
 | `tools`                  | `[terminal, write_file, patch]`    | Tools the gate judges                                      |
-| `timeout_s`              | `3.0`                              | Wall-clock budget per Jev call                             |
+| `timeout_s`              | `3.0`                              | Per-attempt timeout (worst case per call: 2×`timeout_s` + `retry_max_wait_s`) |
 | `cache_seconds`          | `300`                              | Identical calls judged once per window                     |
 | `backend`                | `auto`                             | `auto` = TypeSafe key wins, else gateway · `typesafe`/`gateway` forces one |
 | `typesafe_model` / `typesafe_base_url` | `jev-latest` / `https://api.typesafe.ai` | TypeSafe direto endpoint overrides |
