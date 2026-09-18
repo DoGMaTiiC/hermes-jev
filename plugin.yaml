@@ -1,0 +1,50 @@
+name: jev-judge
+version: 0.1.0
+description: TypeSafe Jev as a judgment layer — pre-tool gate (shadow/enforce) + jev_ask tool. Fail-open, stdlib only.
+provides_tools:
+  - jev_ask
+provides_hooks:
+  - pre_tool_call
+requires_env:
+  - name: AI_GATEWAY_API_KEY
+    description: "Vercel AI Gateway key (Jev runs as typesafe-ai/jev on the gateway)."
+    url: "https://vercel.com/dashboard"
+    secret: true
+license: MIT
+tags: [jev, typesafe, safety, gate, judgment]
+config_schema:
+  mode:
+    type: str
+    default: "shadow"
+    description: "shadow = log only; enforce = escalate triggered calls to the approval gate"
+  tools:
+    type: list
+    default: ["terminal", "write_file", "patch"]
+    description: "Tool names the gate judges"
+  timeout_s:
+    type: float
+    default: 3.0
+    description: "Wall-clock budget per Jev call (fail-open on timeout)"
+  cache_seconds:
+    type: int
+    default: 120
+    description: "Identical tool calls are judged once per this window"
+  destructive_threshold:
+    type: float
+    default: 0.90
+  exfiltration_threshold:
+    type: float
+    default: 0.70
+  impact_threshold:
+    type: float
+    default: 2.5
+  jev_model:
+    type: str
+    default: "typesafe-ai/jev"
+  jev_base_url:
+    type: str
+    default: "https://ai-gateway.vercel.sh/v4/ai"
+  log_path:
+    type: str
+    default: ""
+    description: "JSONL decision log (default: <HERMES_HOME>/logs/jev-judge.log)"
