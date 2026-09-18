@@ -233,6 +233,79 @@ def test_suggest_fail_open():
         print("ok  fail-open com client None")
 
 
+class ChunkStub:
+    """One canned answer per call: ranks a different skill first in each chunk."""
+
+    def __init__(self, per_call):
+        self.per_call = per_call
+        self.calls = []
+
+    def evaluate(self, state, questions):
+        idx = len(self.calls)
+        self.calls.append((state, questions))
+        return {
+            "answers": self.per_call[idx],
+            "confidence": {},
+            "cost": "0.00002",
+            "usage": {},
+            "latency_ms": 12,
+        }
+
+
+def test_rank_best_chunk_first():
+    skills = [
+        R.Skill(name=n, description=f"Skill {n}", path=Path(f"/tmp/x/{n}/SKILL.md"))
+        for n in ("s-a", "s-b", "s-c", "s-d")
+    ]
+    gate_answers = {
+        "gate::acts_on_user_system": {"probability": 0.9},
+        "gate::would_follow_documented_procedure": {"probability": 0.9},
+        "gate::prose_suffices": {"probability": 0.1},
+    }
+    stub = ChunkStub(
+        [
+            {
+                "which": {"probabilities": {"s-a": 0.5, "s-b": 0.3, RT.NONE_OPTION: 0.0}},
+                **gate_answers,
+            },
+            {
+                "which": {"probabilities": {"s-c": 0.9, "s-d": 0.05, RT.NONE_OPTION: 0.0}},
+            },
+        ]
+    )
+    ranked = RT.rank_wide(stub, "do the thing", skills, chunk=2, shortlist=1)
+    assert ranked is not None
+    assert ranked["calls"] == 2, ranked
+    assert ranked["shortlist"] == ["s-c"], ranked
+    print("ok  shortlist comeca pelo melhor chunk")
+
+
+def test_rank_discards_unknown():
+    with tempfile.TemporaryDirectory() as tmp:
+        skills = three_skills(tmp)
+        stub = StubClient(
+            first=first_answers(
+                {"ghost-skill": 0.9, "alpha": 0.05, "beta": 0.02, "gamma": 0.01}
+            ),
+            second=second_answers(
+                "alpha", {"alpha": 0.8}, {"alpha": 0.9, "beta": 0.1, "gamma": 0.1}
+            ),
+            confidence={"which": 0.8},
+        )
+        res = RT.suggest(stub, "deploy the site", skills)
+        assert res is not None and res.skill == "alpha", res
+        print("ok  nome alucinado descartado da shortlist")
+
+
+def test_roster_no_cap():
+    with tempfile.TemporaryDirectory() as tmp:
+        for i in range(260):
+            write_skill(tmp, f"d{i:03d}", f"skill-{i:03d}", f"Skill number {i}")
+        skills = R.load_roster([tmp])
+        assert len(skills) == 260, len(skills)
+        print("ok  roster acima de 255 sem teto")
+
+
 def test_register_hook_and_command():
     ctx = FakeCtx()
     plugin.register(ctx)
@@ -293,6 +366,9 @@ if __name__ == "__main__":
         test_suggest_none_winner,
         test_suggest_fits_below,
         test_suggest_fail_open,
+        test_rank_best_chunk_first,
+        test_rank_discards_unknown,
+        test_roster_no_cap,
         test_register_hook_and_command,
         test_hook_fail_open,
         test_cli_status_and_check,

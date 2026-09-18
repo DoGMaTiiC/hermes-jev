@@ -127,6 +127,7 @@ def rank_wide(
     answers_first: dict | None = None
     first_result: dict | None = None
     calls = 0
+    valid = {s.name for s in skills}  # unknown names are discarded, never nominated
 
     for index, group in enumerate(groups):
         criteria = {s.name: s.description for s in group}
@@ -153,7 +154,11 @@ def rank_wide(
             "probabilities"
         ) or {}
         ranked = sorted(
-            ((n, float(p)) for n, p in probabilities.items() if n != NONE_OPTION),
+            (
+                (n, float(p))
+                for n, p in probabilities.items()
+                if n != NONE_OPTION and n in valid
+            ),
             key=lambda kv: (-kv[1], kv[0]),
         )
         per_chunk.append(ranked)
@@ -164,7 +169,11 @@ def rank_wide(
         key=lambda i: per_chunk[i][0][1] if per_chunk[i] else -1.0,
     )
     shortlisted: list[str] = []
-    for index, ranked in enumerate(per_chunk):
+    # Best chunk nominates first: with a small shortlist the later chunk's
+    # winner would otherwise be cut by chunk order.
+    order = [best_chunk] + [i for i in range(len(per_chunk)) if i != best_chunk]
+    for index in order:
+        ranked = per_chunk[index]
         if index != best_chunk and none_pressure[index] >= NONE_THRESHOLD:
             continue  # that chunk says nothing fits: noise
         for name, _ in ranked[:shortlist]:

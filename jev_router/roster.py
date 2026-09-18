@@ -77,8 +77,12 @@ class Skill:
         return " ".join(body.split())[:chars]
 
 
-def load_roster(dirs, *, limit: int = MAX_CHOICES) -> list[Skill]:
-    """Read every skill once, de-duplicated by name, in stable name order."""
+def load_roster(dirs) -> list[Skill]:
+    """Read every skill once, de-duplicated by name, in stable name order.
+
+    No cap here: rosters above the API choice limit are the router's job
+    (it chunks them in request 1).
+    """
     seen: set[str] = set()
     skills: list[Skill] = []
     for root in dirs:
@@ -101,6 +105,4 @@ def load_roster(dirs, *, limit: int = MAX_CHOICES) -> list[Skill]:
                     path=skill_file,
                 )
             )
-            if len(skills) >= limit:
-                return sorted(skills, key=lambda s: s.name)
     return sorted(skills, key=lambda s: s.name)
