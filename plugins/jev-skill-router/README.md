@@ -8,15 +8,18 @@ nothing fits. Two routes, picked by the `backend` setting (`auto` by
 default: `TYPESAFE_API_KEY` wins, else `AI_GATEWAY_API_KEY`) — pure stdlib,
 no Node, no SDK.
 
-| Route | Endpoint | Key | Questions | Confidence | Cost |
-| ----- | -------- | --- | --------- | ---------- | ---- |
-| TypeSafe direto | `POST https://api.typesafe.ai/v1/systemone` (`model: jev-latest`) | `TYPESAFE_API_KEY` | `noul` / `choice` / `score` | inline per answer | none (`usage` in tokens) |
-| Vercel AI Gateway | `POST {jev_base_url}/evaluation-model` (`typesafe-ai/jev`) | `AI_GATEWAY_API_KEY` | `boolean` / `choice` / `score` | `providerMetadata.typesafe.confidence` | `providerMetadata.gateway.cost` |
+| Route             | Endpoint                                                          | Key                  | Questions                      | Confidence                             | Cost                            |
+| ----------------- | ----------------------------------------------------------------- | -------------------- | ------------------------------ | -------------------------------------- | ------------------------------- |
+| TypeSafe direto   | `POST https://api.typesafe.ai/v1/systemone` (`model: jev-latest`) | `TYPESAFE_API_KEY`   | `noul` / `choice` / `score`    | inline per answer                      | none (`usage` in tokens)        |
+| Vercel AI Gateway | `POST {jev_base_url}/evaluation-model` (`typesafe-ai/jev`)        | `AI_GATEWAY_API_KEY` | `boolean` / `choice` / `score` | `providerMetadata.typesafe.confidence` | `providerMetadata.gateway.cost` |
 
 Yes/no questions are `boolean` internally and mapped to `noul` on the
 TypeSafe wire; answers come back normalized.
 
-Rota TypeSafe implementada conforme a doc; ainda não exercitada ao vivo (sem chave disponível).
+Exercitada ao vivo nos dois backends (2026-09-21, mesmo state/perguntas):
+TypeSafe direto — `suggest` → `xlsx`, gate 0.57, p 1.00, 1431 ms, `cost: null`,
+usage em tokens; gateway — 732 ms, `cost: 0`. Respostas normalizadas iguais
+(`noul`→`{probability}`, confiança inline 1.0/0.83 vs 1/0.81).
 
 ## What it does
 
@@ -47,28 +50,28 @@ silent.
 
 `plugins.entries.jev-skill-router.settings` in `config.yaml`:
 
-| Key             | Default                                    | Meaning                                              |
-| --------------- | ------------------------------------------ | ---------------------------------------------------- |
-| `mode`          | `off`                                      | `off` = never · `auto` = only with key · `on` = always |
-| `gate`          | `0.30`                                     | Mean of the 3 request judgments; below it, silence   |
-| `fits`          | `0.40`                                     | Winner's own "does it fit" judgment; below it, silence |
-| `shortlist`     | `3`                                        | Candidates carried from request 1 into request 2     |
-| `chunk`         | `240`                                      | Skills per Choice question (API caps one at 255)     |
-| `excerpt`       | `700`                                      | SKILL.md characters each candidate brings            |
-| `timeout_s`     | `4.0`                                      | Per-attempt timeout (worst case per call: 2×`timeout_s` + `retry_max_wait_s`) |
-| `cache_seconds` | `300`                                      | Identical calls answered from cache per window           |
-| `backend`       | `auto`                                     | `auto` = TypeSafe key wins, else gateway · `typesafe`/`gateway` forces one |
-| `typesafe_model` | `jev-latest`                              | TypeSafe direto model                                |
-| `typesafe_base_url` | `https://api.typesafe.ai`               | TypeSafe direto endpoint override                    |
-| `retry_max_wait_s` | `2.0`                                  | Retry once on 429/529 only if Retry-After waits at most this |
-| `breaker_threshold` | `3`                                   | Consecutive 429/529s before going silent             |
-| `breaker_cooldown_s` | `120`                                | Silence window after the breaker opens               |
-| `min_interval_s` | `0.25`                                 | Minimum gap between outgoing Jev calls, per process  |
-| `suggest_chars` | `4000`                                     | Longer user messages are left alone                  |
-| `jev_model`     | `typesafe-ai/jev`                          | Gateway override (prefixed: the loader rejects bare `model`) |
-| `jev_base_url`  | `https://ai-gateway.vercel.sh/v4/ai`       | Endpoint override (prefixed: the loader rejects bare `base_url`) |
-| `roster_dir`    | `<HERMES_HOME>/skills`                     | Where SKILL.md files are scanned                     |
-| `log_path`      | `<HERMES_HOME>/logs/jev-skill-router.log`  | JSONL decision log                                   |
+| Key                  | Default                                   | Meaning                                                                       |
+| -------------------- | ----------------------------------------- | ----------------------------------------------------------------------------- |
+| `mode`               | `off`                                     | `off` = never · `auto` = only with key · `on` = always                        |
+| `gate`               | `0.30`                                    | Mean of the 3 request judgments; below it, silence                            |
+| `fits`               | `0.40`                                    | Winner's own "does it fit" judgment; below it, silence                        |
+| `shortlist`          | `3`                                       | Candidates carried from request 1 into request 2                              |
+| `chunk`              | `240`                                     | Skills per Choice question (API caps one at 255)                              |
+| `excerpt`            | `700`                                     | SKILL.md characters each candidate brings                                     |
+| `timeout_s`          | `4.0`                                     | Per-attempt timeout (worst case per call: 2×`timeout_s` + `retry_max_wait_s`) |
+| `cache_seconds`      | `300`                                     | Identical calls answered from cache per window                                |
+| `backend`            | `auto`                                    | `auto` = TypeSafe key wins, else gateway · `typesafe`/`gateway` forces one    |
+| `typesafe_model`     | `jev-latest`                              | TypeSafe direto model                                                         |
+| `typesafe_base_url`  | `https://api.typesafe.ai`                 | TypeSafe direto endpoint override                                             |
+| `retry_max_wait_s`   | `2.0`                                     | Retry once on 429/529 only if Retry-After waits at most this                  |
+| `breaker_threshold`  | `3`                                       | Consecutive 429/529s before going silent                                      |
+| `breaker_cooldown_s` | `120`                                     | Silence window after the breaker opens                                        |
+| `min_interval_s`     | `0.25`                                    | Minimum gap between outgoing Jev calls, per process                           |
+| `suggest_chars`      | `4000`                                    | Longer user messages are left alone                                           |
+| `jev_model`          | `typesafe-ai/jev`                         | Gateway override (prefixed: the loader rejects bare `model`)                  |
+| `jev_base_url`       | `https://ai-gateway.vercel.sh/v4/ai`      | Endpoint override (prefixed: the loader rejects bare `base_url`)              |
+| `roster_dir`         | `<HERMES_HOME>/skills`                    | Where SKILL.md files are scanned                                              |
+| `log_path`           | `<HERMES_HOME>/logs/jev-skill-router.log` | JSONL decision log                                                            |
 
 ## What leaves your machine
 

