@@ -86,6 +86,15 @@ About 2 Jev calls per eligible turn — roughly $0.00002 on the gateway
 (TypeSafe direto bills in tokens, no per-call $) and ~1 s. Ineligible
 turns (slash, empty, long, already routed) and `mode: off` cost nothing.
 
+## Calibration (measured, not guessed)
+
+Thresholds were calibrated on this machine's live roster — **76 labelled requests**
+(66 covered by exactly one skill, 10 covered by none), shipped pipeline, TypeSafe
+direto: **top-1 95%**, **needless 0/10**, and the second door picked the right skill
+**66/66** — every loss came from the gate. Sweep over gate 0.20–0.40 × fits 0.30–0.50
+puts the shipped pair at the knee (gate 0.25–0.30, any fits in 0.30–0.45 flat).
+Full tables, misses and repro commands: [`docs/calibration/router-roster-2026-09-21.md`](../../docs/calibration/router-roster-2026-09-21.md).
+
 ## Fail-open, always
 
 Missing key for the selected backend, timeout, HTTP error, malformed body —

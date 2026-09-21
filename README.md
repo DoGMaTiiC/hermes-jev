@@ -23,8 +23,10 @@ hermes plugins enable jev-skill-router
 # hermes plugins install jev-skill-router
 ```
 
-Put `AI_GATEWAY_API_KEY` (Vercel AI Gateway) in `~/.hermes/.env`. Both plugins
-fail open without it — nothing breaks, nothing is sent.
+Put `TYPESAFE_API_KEY` (TypeSafe direct — preferred) and/or `AI_GATEWAY_API_KEY`
+(Vercel AI Gateway) in `~/.hermes/.env`. `backend: auto` (the default) picks the
+direct route when its key is present, else the gateway. With no key at all both
+plugins fail open — nothing breaks, nothing is sent.
 
 ## What each plugin does
 
