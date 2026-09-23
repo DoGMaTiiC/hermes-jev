@@ -429,6 +429,19 @@ _TS_BODY = {
     "usage": {"input_tokens": 10, "output_tokens": 5},
 }
 
+_OR_BODY = {
+    "answers": {
+        "urgent": {"type": "noul", "noul": 0.88},
+        "which": {
+            "type": "choice",
+            "choice": "alpha",
+            "probabilities": {"alpha": 0.7},
+            "confidence": 0.8,
+        },
+    },
+    "usage": {"input_tokens": 10, "output_tokens": 0},
+}
+
 _GW_BODY = {
     "answers": {"which": {"choice": "alpha", "probabilities": {"alpha": 0.7}}},
     "providerMetadata": {
@@ -440,6 +453,7 @@ _GW_BODY = {
 
 _Q = {"q": {"type": "boolean", "instructions": "?"}}
 _TS_URL = "https://api.typesafe.ai/v1/systemone"
+_OR_URL = "https://openrouter.ai/api/alpha/decisions"
 _GW_URL = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
 
 
@@ -450,10 +464,10 @@ def _dual_client(keys, **kw):
     with tempfile.TemporaryDirectory() as home:
         saved = {
             n: os.environ.get(n)
-            for n in ("TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")
+            for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")
         }
         try:
-            for n in ("TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY"):
+            for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY"):
                 os.environ.pop(n, None)
             for n, v in keys.items():
                 os.environ[n] = v
@@ -495,6 +509,8 @@ def test_settings_dual_defaults():
     assert s["backend"] == "auto", s
     assert s["typesafe_model"] == "jev-latest", s
     assert s["typesafe_base_url"] == "https://api.typesafe.ai", s
+    assert s["openrouter_model"] == "~typesafe/jev-latest", s
+    assert s["openrouter_base_url"] == "https://openrouter.ai/api/alpha", s
     assert s["retry_max_wait_s"] == 2.0, s
     assert s["breaker_threshold"] == 3, s
     assert s["breaker_cooldown_s"] == 120, s
@@ -509,9 +525,10 @@ def test_hook_auto_silent_without_key():
         (home / "skills").mkdir(parents=True)
         saved = {
             n: os.environ.get(n)
-            for n in ("TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")
+            for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")
         }
         os.environ.pop("TYPESAFE_API_KEY", None)
+        os.environ.pop("OPENROUTER_API_KEY", None)
         os.environ.pop("AI_GATEWAY_API_KEY", None)
         os.environ["HERMES_HOME"] = str(home)
         try:
@@ -575,20 +592,47 @@ def test_gateway_confidence_and_cost():
     print("ok  gateway: confiança via providerMetadata, custo repassado")
 
 
+def test_openrouter_decisions_endpoint():
+    client, script, _ = _enter(
+        _run_dual({"OPENROUTER_API_KEY": "or-key"}, _steps=[("ok", _OR_BODY)])
+    )
+    try:
+        res = client.evaluate({"request": "x"}, _Q)
+        assert res is not None
+        url, headers, payload = script.calls[0]
+        assert url == _OR_URL, url
+        assert headers.get("authorization") == "Bearer or-key", headers
+        assert payload["model"] == "~typesafe/jev-latest", payload
+        assert payload["questions"] == {"q": {"type": "noul", "instructions": "?"}}, payload
+        assert res["answers"]["urgent"] == {"type": "boolean", "probability": 0.88}, res
+        assert res["answers"]["which"]["choice"] == "alpha", res
+        assert res["confidence"] == {"which": 0.8}, res["confidence"]
+        assert res["cost"] is None, res
+    finally:
+        _leave(client)
+    print("ok  openrouter decisions: noul mapping e endpoint alpha")
+
+
 def test_backend_selection():
     cases = [
-        ({"TYPESAFE_API_KEY": "t", "AI_GATEWAY_API_KEY": "g"}, "auto", "typesafe", _TS_URL),
+        ({"TYPESAFE_API_KEY": "t", "OPENROUTER_API_KEY": "o", "AI_GATEWAY_API_KEY": "g"}, "auto", "typesafe", _TS_URL),
+        ({"OPENROUTER_API_KEY": "o", "AI_GATEWAY_API_KEY": "g"}, "auto", "openrouter", _OR_URL),
         ({"AI_GATEWAY_API_KEY": "g"}, "auto", "gateway", _GW_URL),
         ({"TYPESAFE_API_KEY": "t"}, "auto", "typesafe", _TS_URL),
+        ({"OPENROUTER_API_KEY": "o"}, "auto", "openrouter", _OR_URL),
         ({}, "auto", None, None),
-        ({"TYPESAFE_API_KEY": "", "AI_GATEWAY_API_KEY": "g"}, "auto", "gateway", _GW_URL),
+        ({"TYPESAFE_API_KEY": "", "OPENROUTER_API_KEY": "o", "AI_GATEWAY_API_KEY": "g"}, "auto", "openrouter", _OR_URL),
         ({"AI_GATEWAY_API_KEY": "g"}, "typesafe", None, None),
+        ({"OPENROUTER_API_KEY": "o"}, "typesafe", None, None),
         ({"TYPESAFE_API_KEY": "t"}, "gateway", None, None),
+        ({"OPENROUTER_API_KEY": "o"}, "gateway", None, None),
+        ({"AI_GATEWAY_API_KEY": "g"}, "openrouter", None, None),
+        ({"OPENROUTER_API_KEY": "o"}, "openrouter", "openrouter", _OR_URL),
         ({"TYPESAFE_API_KEY": "t", "AI_GATEWAY_API_KEY": "g"}, "gateway", "gateway", _GW_URL),
         ({"TYPESAFE_API_KEY": "t", "AI_GATEWAY_API_KEY": "g"}, "bogus", "typesafe", _TS_URL),
     ]
     for keys, backend, want, url in cases:
-        steps = [("ok", _GW_BODY)] if want else []
+        steps = [("ok", _OR_BODY if want in ("typesafe", "openrouter") else _GW_BODY)] if want else []
         client, script, _ = _enter(_run_dual(keys, backend=backend, _steps=steps))
         try:
             assert C.resolve_backend(backend) == want, (keys, backend, want)
@@ -600,7 +644,7 @@ def test_backend_selection():
                 assert script.calls[0][0] == url, script.calls[0][0]
         finally:
             _leave(client)
-    print("ok  backend auto|typesafe|gateway resolve e silencia sem chave")
+    print("ok  backend auto|typesafe|openrouter|gateway resolve e silencia sem chave")
 
 
 def test_retry_after_seconds():
@@ -871,6 +915,7 @@ if __name__ == "__main__":
         test_hook_auto_silent_without_key,
         test_typesafe_noul_mapping,
         test_gateway_confidence_and_cost,
+        test_openrouter_decisions_endpoint,
         test_backend_selection,
         test_retry_after_seconds,
         test_retry_after_http_date,
