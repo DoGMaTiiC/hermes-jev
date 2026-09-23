@@ -60,7 +60,7 @@ def _env_key(name: str) -> str:
         return ""
 
 
-def _auth_pool_key(provider: str) -> str:
+def _auth_pool_key(provider: str, *, select: bool = True) -> str:
     """Return the first usable runtime key from Hermes' credential pool."""
     try:
         from agent.credential_pool import load_pool  # type: ignore
@@ -68,7 +68,8 @@ def _auth_pool_key(provider: str) -> str:
         load_pool = None
     if load_pool is not None:
         try:
-            entry = load_pool(provider).select()
+            pool = load_pool(provider)
+            entry = pool.select() if select else pool.peek()
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
             logger.debug("jev-skill-router: credential pool unavailable: %s", exc)
         else:
@@ -93,9 +94,9 @@ def api_key() -> str:
     return _env_key("AI_GATEWAY_API_KEY")
 
 
-def openrouter_api_key() -> str:
+def openrouter_api_key(*, select: bool = True) -> str:
     """The OpenRouter key from the environment, falling back to <HERMES_HOME>/.env."""
-    return _env_key("OPENROUTER_API_KEY") or _auth_pool_key("openrouter")
+    return _env_key("OPENROUTER_API_KEY") or _auth_pool_key("openrouter", select=select)
 
 
 def typesafe_api_key() -> str:
@@ -108,7 +109,11 @@ def resolve_backend(backend: str = "auto") -> str | None:
     want = (backend or "auto").strip().lower()
     if want not in ("auto", "typesafe", "openrouter", "gateway"):
         want = "auto"
-    has_ts, has_or, has_gw = bool(typesafe_api_key()), bool(openrouter_api_key()), bool(api_key())
+    has_ts, has_or, has_gw = (
+        bool(typesafe_api_key()),
+        bool(openrouter_api_key(select=False)),
+        bool(api_key()),
+    )
     if want == "typesafe":
         return "typesafe" if has_ts else None
     if want == "openrouter":
@@ -406,6 +411,8 @@ class JevClient:
 
         if backend in ("typesafe", "openrouter"):
             raw_answers = body.get("answers", {})
+            if not isinstance(raw_answers, Mapping):
+                return None
             raw_usage = body.get("usage")
             usage = raw_usage if isinstance(raw_usage, Mapping) else {}
             result = {

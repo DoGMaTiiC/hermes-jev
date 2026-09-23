@@ -696,6 +696,63 @@ def test_openrouter_pool_empty_selection_does_not_reuse_disk_key():
     print("ok  openrouter credential pool vazio nao reaproveita auth.json")
 
 
+def test_openrouter_pool_detection_uses_peek_not_select():
+    """Backend detection may inspect the pool but must not rotate it."""
+    class Entry:
+        runtime_api_key = "pool-runtime-key"
+
+    class Pool:
+        select_calls = 0
+        peek_calls = 0
+
+        def select(self):
+            type(self).select_calls += 1
+            return Entry()
+
+        def peek(self):
+            type(self).peek_calls += 1
+            return Entry()
+
+    fake_agent = types.ModuleType("agent")
+    fake_pool = types.ModuleType("agent.credential_pool")
+    fake_pool.load_pool = lambda provider: Pool()
+    old_agent = sys.modules.get("agent")
+    old_pool = sys.modules.get("agent.credential_pool")
+    sys.modules["agent"] = fake_agent
+    sys.modules["agent.credential_pool"] = fake_pool
+    saved = {n: os.environ.get(n) for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")}
+    try:
+        for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY"):
+            os.environ.pop(n, None)
+        with tempfile.TemporaryDirectory() as home:
+            os.environ["HERMES_HOME"] = home
+            assert C.resolve_backend("auto") == "openrouter"
+            assert Pool.peek_calls == 1
+            assert Pool.select_calls == 0
+            client, script, _ = _enter(_run_dual({}, _steps=[("ok", _OR_BODY)]))
+            try:
+                assert client.evaluate({"request": "x"}, _Q) is not None
+                assert script.calls[0][1].get("authorization") == "Bearer pool-runtime-key"
+            finally:
+                _leave(client)
+            assert Pool.select_calls == 1
+    finally:
+        for n, v in saved.items():
+            if v is None:
+                os.environ.pop(n, None)
+            else:
+                os.environ[n] = v
+        if old_agent is None:
+            sys.modules.pop("agent", None)
+        else:
+            sys.modules["agent"] = old_agent
+        if old_pool is None:
+            sys.modules.pop("agent.credential_pool", None)
+        else:
+            sys.modules["agent.credential_pool"] = old_pool
+    print("ok  openrouter credential pool usa peek para detectar")
+
+
 def test_openrouter_malformed_response_shapes_fail_open():
     client, _, _ = _enter(
         _run_dual({"OPENROUTER_API_KEY": "or-key"}, _steps=[("ok", ["not", "an", "object"])])
@@ -715,6 +772,16 @@ def test_openrouter_malformed_response_shapes_fail_open():
         assert res is not None
         assert res["cost"] is None, res
         assert res["usage"] == {}, res
+    finally:
+        _leave(client)
+
+    body = dict(_OR_BODY)
+    body["answers"] = ["not", "a", "mapping"]
+    client, _, _ = _enter(
+        _run_dual({"OPENROUTER_API_KEY": "or-key"}, _steps=[("ok", body)])
+    )
+    try:
+        assert client.evaluate({"request": "x"}, _Q) is None
     finally:
         _leave(client)
     print("ok  openrouter respostas malformadas falham abertas")
@@ -1025,6 +1092,7 @@ if __name__ == "__main__":
         test_openrouter_decisions_endpoint,
         test_openrouter_pool_runtime_key_import_hook,
         test_openrouter_pool_empty_selection_does_not_reuse_disk_key,
+        test_openrouter_pool_detection_uses_peek_not_select,
         test_openrouter_malformed_response_shapes_fail_open,
         test_backend_selection,
         test_retry_after_seconds,
