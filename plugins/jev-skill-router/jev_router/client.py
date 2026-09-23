@@ -94,7 +94,7 @@ def api_key() -> str:
     return _env_key("AI_GATEWAY_API_KEY")
 
 
-def openrouter_api_key(*, select: bool = True) -> str:
+def openrouter_api_key(*, select: bool = False) -> str:
     """The OpenRouter key from the environment, falling back to <HERMES_HOME>/.env."""
     return _env_key("OPENROUTER_API_KEY") or _auth_pool_key("openrouter", select=select)
 
@@ -236,12 +236,12 @@ class JevClient:
         self._clock = time.monotonic
         self._sleep = time.sleep
 
-    def _resolve(self) -> tuple[str | None, str | None]:
+    def _resolve(self, *, select_openrouter: bool = False) -> tuple[str | None, str | None]:
         backend = resolve_backend(self.backend)
         if backend == "typesafe":
             return backend, typesafe_api_key()
         if backend == "openrouter":
-            return backend, openrouter_api_key()
+            return backend, openrouter_api_key(select=select_openrouter)
         if backend == "gateway":
             return backend, api_key()
         return None, None
@@ -331,7 +331,7 @@ class JevClient:
 
     def evaluate(self, state, questions: dict) -> dict | None:
         """Return {"answers", "confidence", "cost", "latency_ms"} or None (fail-open)."""
-        backend, key = self._resolve()
+        backend, key = self._resolve(select_openrouter=False)
         if not backend or not key:
             return None
 
@@ -354,6 +354,11 @@ class JevClient:
         hit = self._cache.get(cache_key)
         if hit and hit[0] > now:
             return hit[1]
+
+        if backend == "openrouter":
+            key = openrouter_api_key(select=True)
+            if not key:
+                return None
 
         if backend == "typesafe":
             endpoint = f"{self.typesafe_base_url}/v1/systemone"

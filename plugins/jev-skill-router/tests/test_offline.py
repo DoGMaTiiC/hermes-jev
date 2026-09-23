@@ -622,6 +622,9 @@ def test_openrouter_pool_runtime_key_import_hook():
         def select(self):
             return Entry()
 
+        def peek(self):
+            return Entry()
+
     fake_agent = types.ModuleType("agent")
     fake_pool = types.ModuleType("agent.credential_pool")
     fake_pool.load_pool = lambda provider: Pool()
@@ -660,6 +663,9 @@ def test_openrouter_pool_empty_selection_does_not_reuse_disk_key():
     """A loaded Hermes pool with no selected entry must not fall back to auth.json."""
     class Pool:
         def select(self):
+            return None
+
+        def peek(self):
             return None
 
     fake_agent = types.ModuleType("agent")
@@ -733,6 +739,8 @@ def test_openrouter_pool_detection_uses_peek_not_select():
             try:
                 assert client.evaluate({"request": "x"}, _Q) is not None
                 assert script.calls[0][1].get("authorization") == "Bearer pool-runtime-key"
+                assert client.evaluate({"request": "x"}, _Q) is not None
+                assert len(script.calls) == 1
             finally:
                 _leave(client)
             assert Pool.select_calls == 1
