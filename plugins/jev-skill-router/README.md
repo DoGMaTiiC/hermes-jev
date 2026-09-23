@@ -132,12 +132,19 @@ hermes jev-skill-router check
 
 ## Prior art
 
-Jev plugins for Hermes are a growing family — the catalog already lists
-`hermes-jev`/Nerve (keeltrace), `jev-approvals` and `jev-curator` (anpicasso), four `jev-*`
-routers (Pinutss), `jev` (ourines) and `jev-typesafe` (ajensenwaud). This is the one that
-routes **skills** rather than models, memory or agents: one skill named per eligible turn,
-both thresholds applied in code, calibrated on a labelled request set. It says nothing when
-nothing fits, and it fails open everywhere.
+Skill routing is an established slot in the catalog, and it came first: **`typesafe-skill-router`**
+(DECRUX9812, listed 2026-09-16) and **`skill-router`** (xXLODXx, listed 2026-09-15). This plugin
+follows the same two-stage design — gate booleans over the roster, then a re-read of the shortlist,
+one `<skill_relevance>` line, silence when nothing fits — and the same defaults (`gate 0.30`,
+`fits 0.40`, `shortlist 3`, `chunk 240`, `excerpt 700`, `suggest_chars 4000`). It is a rebuild
+with three differences: a **dual backend** (TypeSafe direct or Vercel AI Gateway, `backend: auto`),
+**rate-limit hardening** (Retry-After retry, breaker, per-process pacing, TTL cache) and a
+**published calibration** on a labelled request set (`docs/calibration/`). MIT, like the rest of
+the family.
+
+The wider Jev family in the catalog — Nerve (`hermes-jev`) by keeltrace, `jev-approvals` and
+`jev-curator` by anpicasso, Pinutss' four `jev-*` routers, `jev` by ourines, `jev-typesafe` by
+ajensenwaud — is credited where its ideas were borrowed.
 
 ## Verify
 
