@@ -69,7 +69,7 @@ silent.
 | `min_interval_s`     | `0.25`                                    | Minimum gap between outgoing Jev calls, per process                           |
 | `suggest_chars`      | `4000`                                    | Longer user messages are left alone                                           |
 | `jev_model`          | `typesafe-ai/jev`                         | Gateway override (prefixed: the loader rejects bare `model`)                  |
-| `jev_base_url`       | `https://ai-gateway.vercel.sh/v4/ai`      | Endpoint override (prefixed: the loader rejects bare `base_url`)              |
+| `jev_base_url`       | `https://ai-gateway.vercel.sh/v4/ai`      | Endpoint override (bare `base_url` is inert — reserved roots are only `model`/`plugins`/`security`/`settings`) |
 | `roster_dir`         | `<HERMES_HOME>/skills`                    | Where SKILL.md files are scanned                                              |
 | `log_path`           | `<HERMES_HOME>/logs/jev-skill-router.log` | JSONL decision log                                                            |
 

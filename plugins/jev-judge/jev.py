@@ -32,6 +32,16 @@ SPEC_VERSION = "4"
 
 RATE_LIMIT_CODES = (429, 529)
 
+# Hard ceiling for one attempt: the loader fail-closes pre_tool_call past
+# hook_callback_timeout (default 30s), so an unbounded timeout_s would turn
+# the documented fail-open into a blocked tool. Worst case per call stays
+# ~2x this + retry_max_wait_s, under that budget.
+MAX_TIMEOUT_S = 10.0
+
+# Cap for the per-process response cache: distinct turns each insert one
+# entry, so size must be bounded even though entries also expire by TTL.
+CACHE_MAX_ENTRIES = 256
+
 # Per-process state, keyed by endpoint URL: client instances are cached per
 # settings (or rebuilt per call), but pacing and breaker must survive that.
 _PACE_LAST: dict[str, float] = {}  # endpoint -> monotonic time of last attempt
@@ -201,7 +211,7 @@ class JevClient:
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self.timeout = float(timeout)
+        self.timeout = min(float(timeout), MAX_TIMEOUT_S)
         self.cache_seconds = int(cache_seconds)
         self.backend = backend
         self.typesafe_model = typesafe_model
@@ -378,4 +388,6 @@ class JevClient:
                 "latency_ms": round((self._clock() - started) * 1000),
             }
         self._cache[cache_key] = (now + self.cache_seconds, result)
+        if len(self._cache) > CACHE_MAX_ENTRIES:
+            self._cache.pop(next(iter(self._cache)))  # oldest-inserted first
         return result

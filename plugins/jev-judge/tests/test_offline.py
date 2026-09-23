@@ -667,6 +667,175 @@ def test_boolean_criteria_passthrough():
     print("ok  criteria propagado no boolean->noul")
 
 
+# --- Hook pre_tool_call (ticket 9): carrega o __init__.py com ctx stub ---
+
+import os as _os_hook
+import tempfile as _tempfile_hook
+
+
+def _hook_module():
+    """Load plugins/jev-judge/__init__.py as jevjudge.hook (relative imports)."""
+    pkg = sys.modules["jevjudge"]
+    for name in ("schemas",):
+        if f"jevjudge.{name}" not in sys.modules:
+            spec = importlib.util.spec_from_file_location(
+                f"jevjudge.{name}", BASE / f"{name}.py"
+            )
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[f"jevjudge.{name}"] = mod
+            spec.loader.exec_module(mod)
+    for name in ("gate", "schemas", "tools"):
+        setattr(pkg, name, sys.modules[f"jevjudge.{name}"])
+    spec = importlib.util.spec_from_file_location("jevjudge.hook", BASE / "__init__.py")
+    mod = importlib.util.module_from_spec(spec)
+    mod.__package__ = "jevjudge"  # senão o import relativo clona gate/tools
+    sys.modules["jevjudge.hook"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _HookCtx:
+    def __init__(self, cfg):
+        self.cfg = dict(cfg)
+        self.hooks = {}
+        self.tools = {}
+
+    def get_config(self, key, default=None):
+        return self.cfg.get(key, default)
+
+    def register_hook(self, name, callback):
+        self.hooks[name] = callback
+
+    def register_tool(self, name, toolset=None, schema=None, handler=None):
+        self.tools[name] = handler
+
+
+def _run_hook(cfg, verdict):
+    """Register the hook with cfg; judge stubbed to return verdict. No network."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _ctx():
+        with _tempfile_hook.TemporaryDirectory() as home:
+            saved = _os_hook.environ.get("HERMES_HOME")
+            _os_hook.environ["HERMES_HOME"] = home
+            log = str(Path(home) / "hook.log")
+            hook = _hook_module()
+            ctx = _HookCtx({**cfg, "log_path": log})
+            hook.register(ctx)
+            calls = {}
+            old_judge, old_client_for = gate.judge, gate.client_for
+
+            def fake_judge(client, tool_name, args, thresholds):
+                calls["judge"] = (tool_name, args)
+                return verdict
+
+            gate.judge = fake_judge
+            gate.client_for = lambda s: object()
+            try:
+                yield ctx.hooks["pre_tool_call"], calls, Path(log)
+            finally:
+                gate.judge = old_judge
+                gate.client_for = old_client_for
+                _os_hook.environ.pop("HERMES_HOME", None)
+                if saved is not None:
+                    _os_hook.environ["HERMES_HOME"] = saved
+
+    return _ctx()
+
+
+def _triggered():
+    return {"triggered": ["destructive"], "probabilities": {}, "confidence": {}}
+
+
+def test_hook_shadow_no_interfere():
+    with _run_hook({"mode": "shadow", "tools": ["terminal"]}, _triggered()) as (h, calls, log):
+        assert h(tool_name="terminal", args={"command": "rm -rf /"}, task_id="t1") is None
+        assert calls["judge"][0] == "terminal", calls
+        line = json.loads(log.read_text().strip())
+        assert line["outcome"] == "flagged_shadow" and line["task_id"] == "t1", line
+    print("ok  hook shadow dispara mas nao interfere")
+
+
+def test_hook_enforce_escalates():
+    with _run_hook({"mode": "enforce", "tools": ["terminal"]}, _triggered()) as (h, calls, log):
+        out = h(tool_name="terminal", args={"command": "rm -rf /"}, task_id="t2")
+        assert out["action"] == "approve" and "terminal" in out["message"], out
+        line = json.loads(log.read_text().strip())
+        assert line["outcome"] == "escalated", line
+    print("ok  hook enforce devolve approve")
+
+
+def test_hook_tool_not_listed():
+    with _run_hook({"mode": "enforce", "tools": ["terminal"]}, _triggered()) as (h, calls, log):
+        assert h(tool_name="patch", args={}) is None
+        assert "judge" not in calls, calls
+        assert not log.exists(), "ferramenta fora da lista nem devia logar"
+    print("ok  hook ignora ferramenta fora da lista")
+
+
+def test_hook_tools_string_no_substring():
+    with _run_hook({"mode": "enforce", "tools": "terminal"}, _triggered()) as (h, calls, log):
+        assert h(tool_name="term", args={}) is None  # substring nao casa
+        assert "judge" not in calls, calls
+    with _run_hook({"mode": "shadow", "tools": "terminal"}, None) as (h, calls, log):
+        assert h(tool_name="terminal", args={}) is None  # fail-open sem resposta
+        assert calls["judge"][0] == "terminal", calls
+        line = json.loads(log.read_text().strip())
+        assert line["outcome"] == "fail_open", line
+    print("ok  hook com tools string: sem substring, fail-open sem chave")
+
+
+def test_hook_clear_verdict():
+    verdict = {"triggered": [], "probabilities": {}, "confidence": {}}
+    with _run_hook({"mode": "shadow", "tools": ["terminal"]}, verdict) as (h, calls, log):
+        assert h(tool_name="terminal", args={"command": "ls"}) is None
+        line = json.loads(log.read_text().strip())
+        assert line["outcome"] == "clear", line
+    print("ok  hook veredito limpo nao interfere")
+
+
+def test_env_key_strips():
+    saved = {n: _os_hook.environ.get(n) for n in ("AI_GATEWAY_API_KEY", "HERMES_HOME")}
+    try:
+        with _tempfile_hook.TemporaryDirectory() as home:
+            _os_hook.environ["HERMES_HOME"] = home
+            _os_hook.environ["AI_GATEWAY_API_KEY"] = "  padded-key \r\n"
+            assert jev.api_key() == "padded-key", repr(jev.api_key())
+            _os_hook.environ.pop("AI_GATEWAY_API_KEY", None)
+            (Path(home) / ".env").write_text("AI_GATEWAY_API_KEY=dotenv-key  \r\n")
+            assert jev.api_key() == "dotenv-key", repr(jev.api_key())
+    finally:
+        for n, v in saved.items():
+            _os_hook.environ.pop(n, None)
+            if v is not None:
+                _os_hook.environ[n] = v
+    print("ok  api_key com strip (env e .env)")
+
+
+def test_timeout_clamped():
+    assert jev.JevClient(timeout=30).timeout == 10.0
+    assert jev.JevClient(timeout=3.0).timeout == 3.0
+    print("ok  timeout clampado em 10s")
+
+
+def test_cache_size_capped():
+    client, script, _ = _enter(
+        _run_dual(
+            {"AI_GATEWAY_API_KEY": "g"},
+            _steps=[("ok", _GW_BODY)] * (jev.CACHE_MAX_ENTRIES + 20),
+        )
+    )
+    try:
+        for i in range(jev.CACHE_MAX_ENTRIES + 20):
+            res = client.evaluate({"n": i}, {"q": {"type": "boolean", "instructions": "?"}})
+            assert res is not None
+        assert len(client._cache) <= jev.CACHE_MAX_ENTRIES, len(client._cache)
+    finally:
+        _leave(client)
+    print("ok  cache do judge com teto de tamanho")
+
+
 if __name__ == "__main__":
     for fn in (
         test_redact,
@@ -692,6 +861,14 @@ if __name__ == "__main__":
         test_retry_after_nonfinite,
         test_breaker_counts_once_per_evaluate,
         test_boolean_criteria_passthrough,
+        test_hook_shadow_no_interfere,
+        test_hook_enforce_escalates,
+        test_hook_tool_not_listed,
+        test_hook_tools_string_no_substring,
+        test_hook_clear_verdict,
+        test_env_key_strips,
+        test_timeout_clamped,
+        test_cache_size_capped,
     ):
         fn()
     print("\ntodos os testes offline passaram")

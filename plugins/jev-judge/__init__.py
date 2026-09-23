@@ -14,6 +14,21 @@ from . import gate, schemas, tools
 logger = logging.getLogger(__name__)
 
 
+def _tool_list(value) -> list:
+    """Normalize the `tools` setting to a list (a bare string is one tool).
+
+    Guards the gate check below: `name in "terminal"` would substring-match
+    ("term" in "terminal"), so a string config must become ["terminal"].
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
 def register(ctx):
     """Wire the gate hook and the jev_ask tool."""
     tools.bind(ctx)  # the tool handler receives no ctx of its own
@@ -21,7 +36,7 @@ def register(ctx):
     def on_pre_tool_call(tool_name=None, args=None, task_id=None, **kwargs):
         try:
             s = gate.settings_for(ctx)
-            if tool_name not in (s["tools"] or []):
+            if tool_name not in _tool_list(s["tools"]):
                 return None
             verdict = gate.judge(gate.client_for(s), tool_name, args or {}, s)
             if verdict is None:  # fail-open: no key, timeout, 429, transport error
