@@ -38,7 +38,7 @@ already-routed turns are left alone.
 ## Install
 
 ```bash
-hermes plugins install DoGMaTiiC/hermes-jev-skill-router
+hermes plugins install DoGMaTiiC/hermes-jev/plugins/jev-skill-router
 hermes jev-skill-router auto   # or: on
 ```
 
@@ -50,28 +50,28 @@ silent.
 
 `plugins.entries.jev-skill-router.settings` in `config.yaml`:
 
-| Key                  | Default                                   | Meaning                                                                       |
-| -------------------- | ----------------------------------------- | ----------------------------------------------------------------------------- |
-| `mode`               | `off`                                     | `off` = never · `auto` = only with key · `on` = always                        |
-| `gate`               | `0.30`                                    | Mean of the 3 request judgments; below it, silence                            |
-| `fits`               | `0.40`                                    | Winner's own "does it fit" judgment; below it, silence                        |
-| `shortlist`          | `3`                                       | Candidates carried from request 1 into request 2                              |
-| `chunk`              | `240`                                     | Skills per Choice question (API caps one at 255)                              |
-| `excerpt`            | `700`                                     | SKILL.md characters each candidate brings                                     |
-| `timeout_s`          | `4.0`                                     | Per-attempt timeout (worst case per call: 2×`timeout_s` + `retry_max_wait_s`) |
-| `cache_seconds`      | `300`                                     | Identical calls answered from cache per window                                |
-| `backend`            | `auto`                                    | `auto` = TypeSafe key wins, else gateway · `typesafe`/`gateway` forces one    |
-| `typesafe_model`     | `jev-latest`                              | TypeSafe direto model                                                         |
-| `typesafe_base_url`  | `https://api.typesafe.ai`                 | TypeSafe direto endpoint override                                             |
-| `retry_max_wait_s`   | `2.0`                                     | Retry once on 429/529 only if Retry-After waits at most this                  |
-| `breaker_threshold`  | `3`                                       | Consecutive 429/529s before going silent                                      |
-| `breaker_cooldown_s` | `120`                                     | Silence window after the breaker opens                                        |
-| `min_interval_s`     | `0.25`                                    | Minimum gap between outgoing Jev calls, per process                           |
-| `suggest_chars`      | `4000`                                    | Longer user messages are left alone                                           |
-| `jev_model`          | `typesafe-ai/jev`                         | Gateway override (prefixed: the loader rejects bare `model`)                  |
+| Key                  | Default                                   | Meaning                                                                                                        |
+| -------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `mode`               | `off`                                     | `off` = never · `auto` = only with key · `on` = always                                                         |
+| `gate`               | `0.30`                                    | Mean of the 3 request judgments; below it, silence                                                             |
+| `fits`               | `0.40`                                    | Winner's own "does it fit" judgment; below it, silence                                                         |
+| `shortlist`          | `3`                                       | Candidates carried from request 1 into request 2                                                               |
+| `chunk`              | `240`                                     | Skills per Choice question (API caps one at 255)                                                               |
+| `excerpt`            | `700`                                     | SKILL.md characters each candidate brings                                                                      |
+| `timeout_s`          | `4.0`                                     | Per-attempt timeout (worst case per call: 2×`timeout_s` + `retry_max_wait_s`)                                  |
+| `cache_seconds`      | `300`                                     | Identical calls answered from cache per window                                                                 |
+| `backend`            | `auto`                                    | `auto` = TypeSafe key wins, else gateway · `typesafe`/`gateway` forces one                                     |
+| `typesafe_model`     | `jev-latest`                              | TypeSafe direto model                                                                                          |
+| `typesafe_base_url`  | `https://api.typesafe.ai`                 | TypeSafe direto endpoint override                                                                              |
+| `retry_max_wait_s`   | `2.0`                                     | Retry once on 429/529 only if Retry-After waits at most this                                                   |
+| `breaker_threshold`  | `3`                                       | Consecutive 429/529s before going silent                                                                       |
+| `breaker_cooldown_s` | `120`                                     | Silence window after the breaker opens                                                                         |
+| `min_interval_s`     | `0.25`                                    | Minimum gap between outgoing Jev calls, per process                                                            |
+| `suggest_chars`      | `4000`                                    | Longer user messages are left alone                                                                            |
+| `jev_model`          | `typesafe-ai/jev`                         | Gateway override (prefixed: the loader rejects bare `model`)                                                   |
 | `jev_base_url`       | `https://ai-gateway.vercel.sh/v4/ai`      | Endpoint override (bare `base_url` is inert — reserved roots are only `model`/`plugins`/`security`/`settings`) |
-| `roster_dir`         | `<HERMES_HOME>/skills`                    | Where SKILL.md files are scanned                                              |
-| `log_path`           | `<HERMES_HOME>/logs/jev-skill-router.log` | JSONL decision log                                                            |
+| `roster_dir`         | `<HERMES_HOME>/skills`                    | Where SKILL.md files are scanned                                                                               |
+| `log_path`           | `<HERMES_HOME>/logs/jev-skill-router.log` | JSONL decision log                                                                                             |
 
 ## What leaves your machine
 
@@ -129,6 +129,15 @@ hermes jev-skill-router status
 hermes jev-skill-router suggest "deploy the site" [--json]
 hermes jev-skill-router check
 ```
+
+## Prior art
+
+Jev plugins for Hermes are a growing family — the catalog already lists
+`hermes-jev`/Nerve (keeltrace), `jev-approvals` and `jev-curator` (anpicasso), four `jev-*`
+routers (Pinutss), `jev` (ourines) and `jev-typesafe` (ajensenwaud). This is the one that
+routes **skills** rather than models, memory or agents: one skill named per eligible turn,
+both thresholds applied in code, calibrated on a labelled request set. It says nothing when
+nothing fits, and it fails open everywhere.
 
 ## Verify
 

@@ -26,6 +26,12 @@ Exercitada ao vivo nos dois backends (2026-09-21, mesma bateria de 3 calls):
 | `ls -la ~/projetos/hermes-jev/plugins`             | clear (1010 ms)                                              | clear (411 ms)              |
 | `curl -X POST … -d @~/.hermes/.env`                | exfiltration 0.97 · impact 2.98 (866 ms)                     | 0.97 · 2.98 (352 ms)        |
 
+## Install
+
+```bash
+hermes plugins install DoGMaTiiC/hermes-jev/plugins/jev-judge
+```
+
 ## What it does
 
 **Gate** (`pre_tool_call`, shadow by default): before `terminal`, `write_file`
@@ -106,6 +112,16 @@ Decision log (one JSON line per judgment):
 ```bash
 tail -f "${HERMES_HOME:-$HOME/.hermes}/logs/jev-judge.log"
 ```
+
+## Prior art
+
+Jev plugins for Hermes are a growing family — the catalog already lists
+`hermes-jev`/Nerve (keeltrace), `jev-approvals` and `jev-curator` (anpicasso), four `jev-*`
+routers (Pinutss), `jev` (ourines) and `jev-typesafe` (ajensenwaud). This plugin occupies the
+narrowest slot in that family: a standalone `pre_tool_call` gate with shadow-by-default, its
+own thresholds fixed in code, one JSONL line per decision, and fail-open on every error path.
+It deliberately does **not** plug into Hermes' native smart-approval path (that is
+`jev-approvals`' job) and it never fails closed.
 
 ## Related
 
