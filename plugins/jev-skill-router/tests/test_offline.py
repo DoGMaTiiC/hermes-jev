@@ -439,7 +439,7 @@ _OR_BODY = {
             "confidence": 0.8,
         },
     },
-    "usage": {"input_tokens": 10, "output_tokens": 0},
+    "usage": {"input_tokens": 10, "output_tokens": 0, "cost": 0.00002},
 }
 
 _GW_BODY = {
@@ -607,10 +607,53 @@ def test_openrouter_decisions_endpoint():
         assert res["answers"]["urgent"] == {"type": "boolean", "probability": 0.88}, res
         assert res["answers"]["which"]["choice"] == "alpha", res
         assert res["confidence"] == {"which": 0.8}, res["confidence"]
-        assert res["cost"] is None, res
+        assert res["cost"] == 0.00002, res
     finally:
         _leave(client)
     print("ok  openrouter decisions: noul mapping e endpoint alpha")
+
+
+def test_openrouter_pool_runtime_key_import_hook():
+    """OpenRouter pool lookup uses Hermes' runtime key resolver before raw auth.json."""
+    class Entry:
+        runtime_api_key = "pool-runtime-key"
+
+    class Pool:
+        def select(self):
+            return Entry()
+
+    fake_agent = types.ModuleType("agent")
+    fake_pool = types.ModuleType("agent.credential_pool")
+    fake_pool.load_pool = lambda provider: Pool()
+    old_agent = sys.modules.get("agent")
+    old_pool = sys.modules.get("agent.credential_pool")
+    sys.modules["agent"] = fake_agent
+    sys.modules["agent.credential_pool"] = fake_pool
+    saved = {n: os.environ.get(n) for n in ("OPENROUTER_API_KEY", "HERMES_HOME")}
+    try:
+        os.environ.pop("OPENROUTER_API_KEY", None)
+        with tempfile.TemporaryDirectory() as home:
+            Path(home, "auth.json").write_text(
+                json.dumps({"credential_pool": {"openrouter": [{"access_token": "stale-disk-key"}]}}),
+                encoding="utf-8",
+            )
+            os.environ["HERMES_HOME"] = home
+            assert C.openrouter_api_key() == "pool-runtime-key"
+    finally:
+        for n, v in saved.items():
+            if v is None:
+                os.environ.pop(n, None)
+            else:
+                os.environ[n] = v
+        if old_agent is None:
+            sys.modules.pop("agent", None)
+        else:
+            sys.modules["agent"] = old_agent
+        if old_pool is None:
+            sys.modules.pop("agent.credential_pool", None)
+        else:
+            sys.modules["agent.credential_pool"] = old_pool
+    print("ok  openrouter credential pool usa runtime_api_key")
 
 
 def test_backend_selection():
@@ -916,6 +959,7 @@ if __name__ == "__main__":
         test_typesafe_noul_mapping,
         test_gateway_confidence_and_cost,
         test_openrouter_decisions_endpoint,
+        test_openrouter_pool_runtime_key_import_hook,
         test_backend_selection,
         test_retry_after_seconds,
         test_retry_after_http_date,

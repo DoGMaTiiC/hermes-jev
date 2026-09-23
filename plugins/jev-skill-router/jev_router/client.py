@@ -60,7 +60,17 @@ def _env_key(name: str) -> str:
 
 
 def _auth_pool_key(provider: str) -> str:
-    """Return the first credential-pool access token for *provider*, if present."""
+    """Return the first usable runtime key from Hermes' credential pool."""
+    try:
+        from agent.credential_pool import load_pool  # type: ignore
+
+        entry = load_pool(provider).select()
+        key = str(getattr(entry, "runtime_api_key", "") or "").strip() if entry else ""
+        if key:
+            return key
+    except Exception:
+        pass
+
     auth_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "auth.json"
     try:
         data = json.loads(auth_file.read_text())
@@ -392,7 +402,7 @@ class JevClient:
             result = {
                 "answers": normalize_typesafe_answers(raw_answers),
                 "confidence": typesafe_confidence(raw_answers),
-                "cost": None,  # TypeSafe/OpenRouter Decisions reports usage, not gateway cost
+                "cost": (body.get("usage") or {}).get("cost") if backend == "openrouter" else None,
                 "usage": body.get("usage"),
                 "latency_ms": round((self._clock() - started) * 1000),
             }
