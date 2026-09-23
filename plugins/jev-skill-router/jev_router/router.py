@@ -66,22 +66,30 @@ def document(request: str, recent_context: str = "") -> dict:
     return {"request": request, "recent_context": recent_context}
 
 
-def should_skip_request(text: str, *, suggest_chars: int = 4000) -> bool:
-    stripped = text.strip()
-    if not stripped or stripped.startswith("/"):
-        return True  # slash commands pick their own flow
+def skip_reason(text: str, suggest_chars: int = 4000) -> str | None:
+    """Why this turn is left alone (None = eligible). Single source of truth."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return "empty"
+    if stripped.startswith("/"):
+        return "slash"  # slash commands pick their own flow
     if suggest_chars and len(stripped) > suggest_chars:
-        return True  # long pastes are not routing questions
+        return "too_long"  # long pastes are not routing questions
     if "<skill_relevance>" in stripped:
-        return True  # already routed this turn
-    return False
+        return "already_routed"  # already routed this turn
+    return None
+
+
+def should_skip_request(text: str, *, suggest_chars: int = 4000) -> bool:
+    return skip_reason(text, suggest_chars) is not None
 
 
 def block(name: str) -> str:
     """The single line injected into the user-message context."""
+    safe = str(name).replace("<", "").replace(">", "")[:64]
     return (
         "<skill_relevance>\n"
-        f"Relevant to the current request: {name}. Ignore this if it does not fit "
+        f"Relevant to the current request: {safe}. Ignore this if it does not fit "
         "what the user actually asked for.\n"
         "</skill_relevance>"
     )
@@ -101,7 +109,14 @@ def chunk_roster(
 
 
 def gate_mean(answers: dict) -> float:
-    """Mean of the three request judgments, with `prose_suffices` inverted."""
+    """Mean of the three request judgments, with `prose_suffices` inverted.
+
+    A missing gate key means no evidence: silence (0.0, below the default
+    threshold) instead of a partial mean that could pass it.
+    """
+    answers = answers or {}
+    if any(f"gate::{key}" not in answers for key in GATE_QUESTIONS):
+        return 0.0
     values = []
     for key in GATE_QUESTIONS:
         row = answers.get(f"gate::{key}") or {}

@@ -19,7 +19,7 @@ config_schema:
   timeout_s:
     type: float
     default: 3.0
-    description: "Per-attempt timeout; worst case per call is 2x this plus retry_max_wait_s"
+    description: "Per-attempt timeout, clamped to 10s in code so the hook stays under the loader callback budget; worst case per call is 2x this plus retry_max_wait_s"
   cache_seconds:
     type: int
     default: 300

@@ -123,16 +123,7 @@ def get_roster(settings: dict) -> list:
 
 
 def _skip_reason(text: str, suggest_chars: int) -> str | None:
-    stripped = (text or "").strip()
-    if not stripped:
-        return "empty"
-    if stripped.startswith("/"):
-        return "slash"
-    if suggest_chars and len(stripped) > suggest_chars:
-        return "too_long"
-    if "<skill_relevance>" in stripped:
-        return "already_routed"
-    return None
+    return _router_mod.skip_reason(text, suggest_chars)
 
 
 def decide(settings: dict, text: str, *, client=None, source: str = "hook"):
@@ -311,7 +302,11 @@ def run_cli(ctx, args: argparse.Namespace) -> int:
             return 1
         print(f"jev-skill-router: mode -> {action}")
         return 0
-    settings = _settings(ctx)
+    try:
+        settings = _settings(ctx)
+    except Exception as exc:
+        print(f"could not read settings: {exc}")
+        return 1
     if action == "status":
         return _cmd_status(ctx, settings)
     if action == "suggest":

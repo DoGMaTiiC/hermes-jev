@@ -32,6 +32,10 @@ SPEC_VERSION = "4"
 
 RATE_LIMIT_CODES = (429, 529)
 
+# Cap for the per-process response cache: distinct turns each insert one
+# entry, so size must be bounded even though entries also expire by TTL.
+CACHE_MAX_ENTRIES = 256
+
 # Per-process state, keyed by endpoint URL: clients are rebuilt per decision,
 # but pacing and breaker must survive that.
 _PACE_LAST: dict[str, float] = {}  # endpoint -> monotonic time of last attempt
@@ -351,4 +355,6 @@ class JevClient:
                 "latency_ms": round((self._clock() - started) * 1000),
             }
         self._cache[cache_key] = (now + self.cache_seconds, result)
+        if len(self._cache) > CACHE_MAX_ENTRIES:
+            self._cache.pop(next(iter(self._cache)))  # oldest-inserted first
         return result
