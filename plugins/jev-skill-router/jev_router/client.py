@@ -19,6 +19,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from datetime import timezone
 from pathlib import Path
 
@@ -63,13 +64,17 @@ def _auth_pool_key(provider: str) -> str:
     """Return the first usable runtime key from Hermes' credential pool."""
     try:
         from agent.credential_pool import load_pool  # type: ignore
-
-        entry = load_pool(provider).select()
-        key = str(getattr(entry, "runtime_api_key", "") or "").strip() if entry else ""
-        if key:
-            return key
-    except Exception:
-        pass
+    except (ImportError, ModuleNotFoundError):
+        load_pool = None
+    if load_pool is not None:
+        try:
+            entry = load_pool(provider).select()
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            logger.debug("jev-skill-router: credential pool unavailable: %s", exc)
+        else:
+            if entry is None:
+                return ""
+            return str(getattr(entry, "runtime_api_key", "") or "").strip()
 
     auth_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "auth.json"
     try:
@@ -396,14 +401,18 @@ class JevClient:
         body = self._post_json(endpoint, payload, headers)
         if body is None:
             return None
+        if not isinstance(body, dict):
+            return None
 
         if backend in ("typesafe", "openrouter"):
             raw_answers = body.get("answers", {})
+            raw_usage = body.get("usage")
+            usage = raw_usage if isinstance(raw_usage, Mapping) else {}
             result = {
                 "answers": normalize_typesafe_answers(raw_answers),
                 "confidence": typesafe_confidence(raw_answers),
-                "cost": (body.get("usage") or {}).get("cost") if backend == "openrouter" else None,
-                "usage": body.get("usage"),
+                "cost": usage.get("cost") if backend == "openrouter" else None,
+                "usage": usage,
                 "latency_ms": round((self._clock() - started) * 1000),
             }
         else:

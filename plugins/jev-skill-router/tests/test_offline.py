@@ -656,6 +656,70 @@ def test_openrouter_pool_runtime_key_import_hook():
     print("ok  openrouter credential pool usa runtime_api_key")
 
 
+def test_openrouter_pool_empty_selection_does_not_reuse_disk_key():
+    """A loaded Hermes pool with no selected entry must not fall back to auth.json."""
+    class Pool:
+        def select(self):
+            return None
+
+    fake_agent = types.ModuleType("agent")
+    fake_pool = types.ModuleType("agent.credential_pool")
+    fake_pool.load_pool = lambda provider: Pool()
+    old_agent = sys.modules.get("agent")
+    old_pool = sys.modules.get("agent.credential_pool")
+    sys.modules["agent"] = fake_agent
+    sys.modules["agent.credential_pool"] = fake_pool
+    saved = {n: os.environ.get(n) for n in ("OPENROUTER_API_KEY", "HERMES_HOME")}
+    try:
+        os.environ.pop("OPENROUTER_API_KEY", None)
+        with tempfile.TemporaryDirectory() as home:
+            Path(home, "auth.json").write_text(
+                json.dumps({"credential_pool": {"openrouter": [{"access_token": "stale-disk-key"}]}}),
+                encoding="utf-8",
+            )
+            os.environ["HERMES_HOME"] = home
+            assert C.openrouter_api_key() == ""
+    finally:
+        for n, v in saved.items():
+            if v is None:
+                os.environ.pop(n, None)
+            else:
+                os.environ[n] = v
+        if old_agent is None:
+            sys.modules.pop("agent", None)
+        else:
+            sys.modules["agent"] = old_agent
+        if old_pool is None:
+            sys.modules.pop("agent.credential_pool", None)
+        else:
+            sys.modules["agent.credential_pool"] = old_pool
+    print("ok  openrouter credential pool vazio nao reaproveita auth.json")
+
+
+def test_openrouter_malformed_response_shapes_fail_open():
+    client, _, _ = _enter(
+        _run_dual({"OPENROUTER_API_KEY": "or-key"}, _steps=[("ok", ["not", "an", "object"])])
+    )
+    try:
+        assert client.evaluate({"request": "x"}, _Q) is None
+    finally:
+        _leave(client)
+
+    body = dict(_OR_BODY)
+    body["usage"] = ["not", "a", "mapping"]
+    client, _, _ = _enter(
+        _run_dual({"OPENROUTER_API_KEY": "or-key"}, _steps=[("ok", body)])
+    )
+    try:
+        res = client.evaluate({"request": "x"}, _Q)
+        assert res is not None
+        assert res["cost"] is None, res
+        assert res["usage"] == {}, res
+    finally:
+        _leave(client)
+    print("ok  openrouter respostas malformadas falham abertas")
+
+
 def test_backend_selection():
     cases = [
         ({"TYPESAFE_API_KEY": "t", "OPENROUTER_API_KEY": "o", "AI_GATEWAY_API_KEY": "g"}, "auto", "typesafe", _TS_URL),
@@ -960,6 +1024,8 @@ if __name__ == "__main__":
         test_gateway_confidence_and_cost,
         test_openrouter_decisions_endpoint,
         test_openrouter_pool_runtime_key_import_hook,
+        test_openrouter_pool_empty_selection_does_not_reuse_disk_key,
+        test_openrouter_malformed_response_shapes_fail_open,
         test_backend_selection,
         test_retry_after_seconds,
         test_retry_after_http_date,
