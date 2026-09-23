@@ -820,6 +820,33 @@ def test_cache_ttl():
     print("ok  cache do router com TTL: hit dentro, miss fora")
 
 
+def test_roster_follows_external_symlink():
+    with tempfile.TemporaryDirectory() as tmp:
+        outside = Path(tmp) / "outside"
+        write_skill(outside, "ext", "external", "External skill via symlink.")
+        root = Path(tmp) / "root"
+        write_skill(root, "plain", "plain", "Plain local skill.")
+        os.symlink(outside / "ext", root / "ext")
+        skills = R.load_roster([root])
+        assert [s.name for s in skills] == ["external", "plain"], [s.name for s in skills]
+        print("ok  roster alcançou skill via symlink externo")
+
+
+def test_roster_symlink_cycle_no_hang_no_dup():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_skill(root, "a", "alpha", "Alpha skill.")
+        write_skill(root, "b", "beta", "Beta skill.")
+        os.symlink(root, root / "a" / "loop")  # ancestral cycle
+        os.symlink(root / "b", root / "b" / "self")  # self cycle
+        os.symlink(root / "b", root / "b-alias")  # alias: same target, second path
+        files = list(R.iter_skill_files(root))
+        assert len(files) == 2, files  # each canonical dir visited once
+        skills = R.load_roster([root])
+        assert [s.name for s in skills] == ["alpha", "beta"], [s.name for s in skills]
+        print("ok  symlink cíclico não travou nem duplicou")
+
+
 if __name__ == "__main__":
     for fn in (
         test_frontmatter_quoted,
@@ -858,6 +885,8 @@ if __name__ == "__main__":
         test_breaker_counts_once_per_evaluate,
         test_boolean_criteria_passthrough,
         test_cache_ttl,
+        test_roster_follows_external_symlink,
+        test_roster_symlink_cycle_no_hang_no_dup,
     ):
         fn()
     print("\ntodos os testes offline passaram")
