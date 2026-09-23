@@ -53,11 +53,37 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
 
 
 def iter_skill_files(root: Path):
-    """Every SKILL.md under *root*, skipping dot-directories."""
+    """Every SKILL.md under *root*, skipping dot-directories.
+
+    Follows symlinked skill directories: a top-level entry often points
+    outside *root* (e.g. a shared skills tree), and the session loader
+    follows those links, so the roster must too. Each canonical directory
+    (by ``os.path.realpath``) is visited once — already-seen subtrees are
+    pruned before descending, so an ancestor-pointing symlink can neither
+    loop forever nor yield a file twice.
+
+    Invariant: every name suggested from this roster must be loadable in
+    the session. This walk cannot enforce that alone (it also sees skills
+    the session loader skips, e.g. nested helpers or names the user
+    disabled in ``~/.hermes/config.yaml``); resolving the live set would
+    mean coupling to Hermes config/profile state, which is deliberately
+    left out — see the implementer report for the measured residual gap.
+    """
     if not root.is_dir():
         return
-    for dirpath, dirnames, filenames in os.walk(root):
+    seen: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        real = os.path.realpath(dirpath)
+        if real in seen:
+            dirnames[:] = []  # second path to a covered tree: do not descend
+            continue
+        seen.add(real)
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if os.path.realpath(os.path.join(dirpath, d)) not in seen
+        ]
         if "SKILL.md" in filenames:
             yield Path(dirpath) / "SKILL.md"
 
