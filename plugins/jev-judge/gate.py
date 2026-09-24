@@ -37,6 +37,12 @@ def settings_for(ctx) -> dict:
         "typesafe_base_url": ctx.get_config(
             "typesafe_base_url", default="https://api.typesafe.ai"
         ),
+        "openrouter_model": ctx.get_config(
+            "openrouter_model", default="~typesafe/jev-latest"
+        ),
+        "openrouter_base_url": ctx.get_config(
+            "openrouter_base_url", default="https://openrouter.ai/api/alpha"
+        ),
         "retry_max_wait_s": ctx.get_config("retry_max_wait_s", default=2.0),
         "breaker_threshold": ctx.get_config("breaker_threshold", default=3),
         "breaker_cooldown_s": ctx.get_config("breaker_cooldown_s", default=120),
@@ -79,6 +85,8 @@ def client_for(s: dict) -> JevClient:
         str(s.get("backend", "auto")),
         str(s.get("typesafe_model", "jev-latest")),
         str(s.get("typesafe_base_url", "https://api.typesafe.ai")),
+        str(s.get("openrouter_model", "~typesafe/jev-latest")),
+        str(s.get("openrouter_base_url", "https://openrouter.ai/api/alpha")),
         float(s.get("retry_max_wait_s", 2.0)),
         int(s.get("breaker_threshold", 3)),
         float(s.get("breaker_cooldown_s", 120)),
@@ -93,10 +101,12 @@ def client_for(s: dict) -> JevClient:
             backend=key[4],
             typesafe_model=key[5],
             typesafe_base_url=key[6],
-            retry_max_wait_s=key[7],
-            breaker_threshold=key[8],
-            breaker_cooldown_s=key[9],
-            min_interval_s=key[10],
+            openrouter_model=key[7],
+            openrouter_base_url=key[8],
+            retry_max_wait_s=key[9],
+            breaker_threshold=key[10],
+            breaker_cooldown_s=key[11],
+            min_interval_s=key[12],
         )
     return _clients[key]
 
