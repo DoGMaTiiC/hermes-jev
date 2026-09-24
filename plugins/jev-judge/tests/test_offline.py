@@ -851,6 +851,29 @@ def test_cache_size_capped():
     print("ok  cache do judge com teto de tamanho")
 
 
+def test_malformed_answers_fail_open():
+    """A provider body whose answers is not a map must fail open, not raise."""
+    script = _Script([("ok", {"model": "x", "answers": "not-a-map", "usage": {}})])
+    client = jev.JevClient(backend="openrouter", timeout=1.0, min_interval_s=0.0,
+                           cache_seconds=0)
+    client._urlopen = script
+    clock = _Clock()
+    client._clock = clock.monotonic
+    client._sleep = clock.sleep
+    key_had = _os.environ.get("OPENROUTER_API_KEY")
+    _os.environ["OPENROUTER_API_KEY"] = "k-test"
+    try:
+        out = client.evaluate(
+            {"s": 1}, {"q": {"type": "boolean", "instructions": "x?"}})
+    finally:
+        if key_had is None:
+            _os.environ.pop("OPENROUTER_API_KEY", None)
+        else:
+            _os.environ["OPENROUTER_API_KEY"] = key_had
+    assert out is None, out
+    print("ok  answers nao-mapa -> fail-open (None), sem excecao")
+
+
 if __name__ == "__main__":
     for fn in (
         test_redact,
@@ -884,34 +907,10 @@ if __name__ == "__main__":
         test_env_key_strips,
         test_timeout_clamped,
         test_cache_size_capped,
+        test_malformed_answers_fail_open,
     ):
         fn()
     print("\ntodos os testes offline passaram")
-
-def test_malformed_answers_fail_open():
-    """A provider body whose answers is not a map must fail open, not raise."""
-    script = _Script([("ok", {"model": "x", "answers": "not-a-map", "usage": {}})])
-    client = jev.JevClient(backend="openrouter", timeout=1.0, min_interval_s=0.0,
-                           cache_seconds=0)
-    client._urlopen = script
-    clock = _Clock()
-    client._clock = clock.monotonic
-    client._sleep = clock.sleep
-    key_had = _os.environ.get("OPENROUTER_API_KEY")
-    _os.environ["OPENROUTER_API_KEY"] = "k-test"
-    try:
-        out = client.evaluate(
-            {"s": 1}, {"q": {"type": "boolean", "instructions": "x?"}})
-    finally:
-        if key_had is None:
-            _os.environ.pop("OPENROUTER_API_KEY", None)
-        else:
-            _os.environ["OPENROUTER_API_KEY"] = key_had
-    assert out is None, out
-    print("ok  answers nao-mapa -> fail-open (None), sem excecao")
-
-
-test_malformed_answers_fail_open()
 
 
 # restore host env after the suite
