@@ -1,8 +1,8 @@
-"""Jev client — TypeSafe System One, direct or via the Vercel AI Gateway.
+"""Jev client — TypeSafe System One, Vercel AI Gateway, or OpenRouter.
 
-Pure stdlib. Backend selection (`backend: auto|typesafe|gateway`, default
-`auto`): TypeSafe direct when TYPESAFE_API_KEY is present, else the gateway
-when AI_GATEWAY_API_KEY is present, else silent. Every failure path returns
+Pure stdlib. Backend selection (`backend: auto|typesafe|gateway|openrouter`,
+default `auto`) falls back in this order: TypeSafe direct, gateway, OpenRouter,
+then silent when no corresponding key is present. Every failure path returns
 None (fail-open).
 """
 
@@ -403,12 +403,12 @@ class JevClient:
         body = self._post_json(endpoint, payload, headers)
         if body is None:
             return None
+        if not isinstance(body, dict) or not isinstance(body.get("answers"), dict):
+            logger.debug("jev-judge: malformed provider response; fail-open")
+            return None
+        raw_answers = body["answers"]
 
         if backend == "typesafe":
-            raw_answers = body.get("answers", {})
-            if not isinstance(raw_answers, dict):
-                logger.debug("jev-judge: malformed answers payload; fail-open")
-                return None
             result = {
                 "answers": normalize_typesafe_answers(raw_answers),
                 "confidence": typesafe_confidence(raw_answers),
@@ -418,10 +418,6 @@ class JevClient:
             }
         elif backend == "openrouter":
             # Same answer shapes as TypeSafe direct (noul/choice/score).
-            raw_answers = body.get("answers", {})
-            if not isinstance(raw_answers, dict):
-                logger.debug("jev-judge: malformed answers payload; fail-open")
-                return None
             result = {
                 "answers": normalize_typesafe_answers(raw_answers),
                 "confidence": typesafe_confidence(raw_answers),
@@ -431,7 +427,7 @@ class JevClient:
             }
         else:
             result = {
-                "answers": body.get("answers", {}),
+                "answers": raw_answers,
                 "confidence": (
                     body.get("providerMetadata", {}).get("typesafe", {}) or {}
                 ).get("confidence", {}),
