@@ -406,6 +406,9 @@ class JevClient:
 
         if backend == "typesafe":
             raw_answers = body.get("answers", {})
+            if not isinstance(raw_answers, dict):
+                logger.debug("jev-judge: malformed answers payload; fail-open")
+                return None
             result = {
                 "answers": normalize_typesafe_answers(raw_answers),
                 "confidence": typesafe_confidence(raw_answers),
@@ -416,6 +419,9 @@ class JevClient:
         elif backend == "openrouter":
             # Same answer shapes as TypeSafe direct (noul/choice/score).
             raw_answers = body.get("answers", {})
+            if not isinstance(raw_answers, dict):
+                logger.debug("jev-judge: malformed answers payload; fail-open")
+                return None
             result = {
                 "answers": normalize_typesafe_answers(raw_answers),
                 "confidence": typesafe_confidence(raw_answers),
