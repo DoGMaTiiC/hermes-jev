@@ -1,7 +1,17 @@
 """Offline tests for jev-judge — no network, no keys. Run: python3 tests/test_offline.py"""
-
 from __future__ import annotations
 
+
+# Keep the suite offline on any host: clear credential env vars and point the
+# .env fallback at an empty dir BEFORE the plugin modules load.
+import os as _os
+import tempfile as _tempfile
+
+for _key in ("TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY", "OPENROUTER_API_KEY"):
+    _os.environ.pop(_key, None)
+_HERMES_HOME_SAVED = _os.environ.get("HERMES_HOME")
+_TEMP_HERMES_HOME = _tempfile.TemporaryDirectory()
+_os.environ["HERMES_HOME"] = _TEMP_HERMES_HOME.name
 import importlib.util
 import json
 import sys
@@ -96,6 +106,7 @@ def test_jev_ask_uses_settings():
     class RecClient:
         def __init__(self, base_url="", model="", timeout=0.0, cache_seconds=0,
                      backend="auto", typesafe_model="", typesafe_base_url="",
+                     openrouter_model="", openrouter_base_url="",
                      retry_max_wait_s=0.0, breaker_threshold=0,
                      breaker_cooldown_s=0.0, min_interval_s=0.0):
             seen.update(
@@ -106,6 +117,8 @@ def test_jev_ask_uses_settings():
                 backend=backend,
                 typesafe_model=typesafe_model,
                 typesafe_base_url=typesafe_base_url,
+                openrouter_model=openrouter_model,
+                openrouter_base_url=openrouter_base_url,
                 retry_max_wait_s=retry_max_wait_s,
                 breaker_threshold=breaker_threshold,
                 breaker_cooldown_s=breaker_cooldown_s,
@@ -164,6 +177,8 @@ def test_jev_ask_uses_settings():
             "backend": "auto",
             "typesafe_model": "jev-latest",
             "typesafe_base_url": "https://api.typesafe.ai",
+            "openrouter_model": "~typesafe/jev-latest",
+            "openrouter_base_url": "https://openrouter.ai/api/alpha",
             "retry_max_wait_s": 2.0,
             "breaker_threshold": 3,
             "breaker_cooldown_s": 120,
@@ -1240,3 +1255,36 @@ if __name__ == "__main__":
     ):
         fn()
     print("\ntodos os testes offline passaram")
+
+def test_malformed_answers_fail_open():
+    """A provider body whose answers is not a map must fail open, not raise."""
+    script = _Script([("ok", {"model": "x", "answers": "not-a-map", "usage": {}})])
+    client = jev.JevClient(backend="openrouter", timeout=1.0, min_interval_s=0.0,
+                           cache_seconds=0)
+    client._urlopen = script
+    clock = _Clock()
+    client._clock = clock.monotonic
+    client._sleep = clock.sleep
+    key_had = _os.environ.get("OPENROUTER_API_KEY")
+    _os.environ["OPENROUTER_API_KEY"] = "k-test"
+    try:
+        out = client.evaluate(
+            {"s": 1}, {"q": {"type": "boolean", "instructions": "x?"}})
+    finally:
+        if key_had is None:
+            _os.environ.pop("OPENROUTER_API_KEY", None)
+        else:
+            _os.environ["OPENROUTER_API_KEY"] = key_had
+    assert out is None, out
+    print("ok  answers nao-mapa -> fail-open (None), sem excecao")
+
+
+test_malformed_answers_fail_open()
+
+
+# restore host env after the suite
+if _HERMES_HOME_SAVED is None:
+    _os.environ.pop("HERMES_HOME", None)
+else:
+    _os.environ["HERMES_HOME"] = _HERMES_HOME_SAVED
+_TEMP_HERMES_HOME.cleanup()
