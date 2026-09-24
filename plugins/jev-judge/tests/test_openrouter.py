@@ -92,6 +92,18 @@ def test_resolve_backend_openrouter():
         assert jev.resolve_backend("openrouter") is None
 
 
+def test_auto_backend_priority_matrix():
+    cases = (
+        ({"TYPESAFE_API_KEY": "ts", "AI_GATEWAY_API_KEY": "gw", "OPENROUTER_API_KEY": "or"}, "typesafe"),
+        ({"TYPESAFE_API_KEY": None, "AI_GATEWAY_API_KEY": "gw", "OPENROUTER_API_KEY": "or"}, "gateway"),
+        ({"TYPESAFE_API_KEY": None, "AI_GATEWAY_API_KEY": None, "OPENROUTER_API_KEY": "or"}, "openrouter"),
+    )
+    for env, expected in cases:
+        with monkeypatch_env(env):
+            assert jev.resolve_backend("auto") == expected, (env, expected)
+    print("ok  auto backend priority is typesafe -> gateway -> openrouter")
+
+
 def test_wire_request_shape():
     client, calls = _client()
     result = client.evaluate({"action": {"tool": "terminal"}}, jev.to_typesafe_questions(gate.GATE_QUESTIONS))
@@ -146,6 +158,32 @@ def test_fail_open_on_malformed_body():
     client, _ = _client(monkeypatched_urlopen=bad)
     assert client.evaluate({"action": {}}, {"q": {"type": "boolean", "instructions": "x?"}}) is None
     print("ok  fail-open: malformed provider body -> evaluate() returns None")
+
+
+def test_fail_open_on_non_object_body():
+    client, _ = _client(
+        monkeypatched_urlopen=lambda req: _StubResponse(b'["not", "an", "object"]')
+    )
+    assert client.evaluate({"action": {}}, {"q": {"type": "boolean"}}) is None
+    print("ok  fail-open: non-object provider body -> evaluate() returns None")
+
+
+def test_gateway_fail_open_on_non_dict_answers():
+    client = jev.JevClient(
+        backend="gateway", cache_seconds=0, min_interval_s=0.0
+    )
+    client._urlopen = lambda req, timeout=None: _StubResponse(
+        json.dumps(
+            {
+                "answers": ["not", "a", "map"],
+                "providerMetadata": {"gateway": {"cost": "0.01"}},
+            }
+        ).encode()
+    )
+    with monkeypatch_env({"AI_GATEWAY_API_KEY": "gateway-key"}):
+        result = client.evaluate({"action": {}}, {"q": {"type": "boolean"}})
+    assert result is None, result
+    print("ok  fail-open: gateway answers must be an object")
 
 
 def test_cache_reuse():
@@ -245,11 +283,14 @@ class monkeypatch_env:
 
 if __name__ == "__main__":
     test_resolve_backend_openrouter()
+    test_auto_backend_priority_matrix()
     test_wire_request_shape()
     test_answer_normalization()
     test_gate_judge_end_to_end()
     test_fail_open_on_http_error()
     test_fail_open_on_malformed_body()
+    test_fail_open_on_non_object_body()
+    test_gateway_fail_open_on_non_dict_answers()
     test_cache_reuse()
     test_settings_flow_through_gate()
     test_custom_settings_reach_openrouter_request()
