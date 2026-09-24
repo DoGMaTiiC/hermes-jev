@@ -175,6 +175,37 @@ def test_settings_flow_through_gate():
     print("ok  settings_for/client_for expose openrouter knobs with sane defaults")
 
 
+def test_custom_settings_reach_openrouter_request():
+    class Ctx:
+        values = {
+            "backend": "openrouter",
+            "openrouter_model": "acme/custom-jev",
+            "openrouter_base_url": "https://router.example/v1",
+            "cache_seconds": 0,
+            "min_interval_s": 0.0,
+        }
+
+        def get_config(self, key, default=None):
+            return self.values.get(key, default)
+
+    client = gate.client_for(gate.settings_for(Ctx()))
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(req)
+        return _StubResponse(json.dumps(OPENROUTER_RESPONSE).encode())
+
+    client._urlopen = fake_urlopen
+    with monkeypatch_env({"OPENROUTER_API_KEY": "custom-key"}):
+        result = client.evaluate({"action": {}}, {"q": {"type": "boolean"}})
+
+    assert result is not None
+    assert calls[0].full_url == "https://router.example/v1/decisions"
+    payload = json.loads(calls[0].data.decode())
+    assert payload["model"] == "acme/custom-jev", payload
+    print("ok  custom OpenRouter endpoint and model flow through gate.client_for")
+
+
 class monkeypatch_env:
     """Context manager temporarily clearing one env var (and the .env fallback)."""
 
@@ -222,4 +253,5 @@ if __name__ == "__main__":
     test_fail_open_on_malformed_body()
     test_cache_reuse()
     test_settings_flow_through_gate()
+    test_custom_settings_reach_openrouter_request()
     print("\nall openrouter backend tests passed")
