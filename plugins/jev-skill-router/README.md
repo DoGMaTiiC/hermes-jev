@@ -17,7 +17,8 @@ default: `TYPESAFE_API_KEY` wins, else `OPENROUTER_API_KEY`, else
 Yes/no questions are `boolean` internally and mapped to `noul` on the
 TypeSafe wire; answers come back normalized.
 
-Exercitada ao vivo nos dois backends (2026-09-21, mesmo state/perguntas):
+Exercitada ao vivo em 2026-09-21 nos dois backends da época (TypeSafe direto
+e gateway, mesmo state/perguntas) — a rota OpenRouter veio depois (#16):
 TypeSafe direto — `suggest` → `xlsx`, gate 0.57, p 1.00, 1431 ms, `cost: null`,
 usage em tokens; gateway — 732 ms, `cost: 0`. Respostas normalizadas iguais
 (`noul`→`{probability}`, confiança inline 1.0/0.83 vs 1/0.81).
@@ -83,6 +84,10 @@ Per eligible turn: the request text plus skill names and one-line
 descriptions; for the 3 shortlisted candidates, the description plus the
 first 700 characters of SKILL.md. Never: conversation history, files,
 memory, or tool output.
+
+Hard limits (#19), same as the judge: a payload above 65536 bytes is
+refused **without sending**; 3xx is never followed and proxy env vars are
+ignored.
 
 ## Cost / latency
 
