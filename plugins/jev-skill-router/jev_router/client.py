@@ -172,6 +172,8 @@ def _num(value, default: float = 0.0) -> float:
 
 def _noul(value) -> float | None:
     """Finite float or None (missing/malformed noul is never 0.0)."""
+    if isinstance(value, bool):
+        return None  # bool é subclasse de int: float(False) seria 0.0
     try:
         num = float(value)
     except (TypeError, ValueError):

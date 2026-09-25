@@ -1124,6 +1124,9 @@ def test_normalize_strict_noul():
         {
             "ok": {"type": "noul", "noul": 0.97},
             "zero": {"type": "noul", "noul": 0.0},  # 0.0 explícito do servidor passa
+            "one": {"type": "noul", "noul": 1.0},  # 1.0 explícito do servidor passa
+            "false": {"type": "noul", "noul": False},  # bool não é número: some (#28)
+            "true": {"type": "noul", "noul": True},  # bool não é número: some (#28)
             "missing": {"type": "noul"},
             "null": {"type": "noul", "noul": None},
             "garbage": {"type": "noul", "noul": "alta"},
@@ -1134,8 +1137,9 @@ def test_normalize_strict_noul():
     )
     assert out["ok"] == {"type": "boolean", "probability": 0.97}, out
     assert out["zero"] == {"type": "boolean", "probability": 0.0}, out
+    assert out["one"] == {"type": "boolean", "probability": 1.0}, out
     assert out["choice"] == {"type": "choice", "choice": "b"}, out
-    for qid in ("missing", "null", "garbage", "nan", "inf"):
+    for qid in ("missing", "null", "garbage", "nan", "inf", "false", "true"):
         assert qid not in out, (qid, out)  # nunca fabrica 0.0: some, o gate lê missing
     print("ok  noul ausente/malformado some (nunca 0.0); 0.0 explícito passa")
 
