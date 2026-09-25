@@ -38,17 +38,21 @@ def register(ctx):
             s = gate.settings_for(ctx)
             if tool_name not in _tool_list(s["tools"]):
                 return None
-            verdict = gate.judge(gate.client_for(s), tool_name, args or {}, s)
-            if verdict is None:  # fail-open: no key, timeout, 429, transport error
-                gate.log_decision(
-                    s["log_path"],
-                    {
-                        "source": "gate",
-                        "tool": tool_name,
-                        "outcome": "fail_open",
-                        "task_id": task_id,
-                    },
-                )
+            client = gate.client_for(s)
+            verdict = gate.judge(client, tool_name, args or {}, s)
+            if verdict is None or verdict.get("outcome") == "fail_open":
+                entry = {
+                    "source": "gate",
+                    "tool": tool_name,
+                    "outcome": "fail_open",
+                    "reason": ((verdict or {}).get("reason")
+                               or getattr(client, "last_fail_reason", None)
+                               or "transport"),
+                    "task_id": task_id,
+                }
+                if (verdict or {}).get("missing"):
+                    entry["missing"] = verdict["missing"]
+                gate.log_decision(s["log_path"], entry)
                 return None
             verdict.update(source="gate", mode=s["mode"], task_id=task_id)
             if not verdict["triggered"]:
