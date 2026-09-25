@@ -30,15 +30,17 @@ toolsmod = sys.modules["jevjudge.tools"]
 class StubClient:
     """Returns a canned evaluate() result, or None to simulate failure."""
 
-    def __init__(self, answers=None, confidence=None, latency=123, cost="0.00002"):
+    def __init__(self, answers=None, confidence=None, latency=123, cost="0.00002", reason=None):
         self.answers = answers
         self.confidence = confidence or {}
         self.latency = latency
         self.cost = cost
+        self.last_fail_reason = reason  # espelha JevClient: motivo do último fail-open
 
     def evaluate(self, state, questions):
         if self.answers is None:
             return None
+        self.last_fail_reason = None  # sucesso limpa o motivo, como no cliente real
         return {
             "answers": self.answers,
             "confidence": self.confidence,
@@ -209,10 +211,9 @@ def test_judge_clear_and_custom_threshold():
 
 
 def test_fail_open():
-    assert (
-        gate.judge(StubClient(answers=None), "terminal", {"command": "ls"}, {}) is None
-    )
-    print("ok  fail-open: cliente sem resposta devolve None")
+    v = gate.judge(StubClient(answers=None), "terminal", {"command": "ls"}, {})
+    assert v["outcome"] == "fail_open" and v["reason"] == "transport", v
+    print("ok  fail-open: cliente sem resposta vira fail_open com motivo")
 
 
 def test_log_writes_jsonl(tmpdir=None):
@@ -249,6 +250,22 @@ class _FakeResp:
         return False
 
 
+class _FakeRaw:
+    """Corpo bruto (ex.: HTML de erro) para exercitar falha de parse."""
+
+    def __init__(self, text):
+        self._raw = text.encode() if isinstance(text, str) else bytes(text)
+
+    def read(self):
+        return self._raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
 def _http_error(code, retry_after=None):
     hdrs = {}
     if retry_after is not None:
@@ -257,7 +274,7 @@ def _http_error(code, retry_after=None):
 
 
 class _Script:
-    """Transporte stubado: sequência de ('ok', body) | ('http', code, retry-after)."""
+    """Transporte stubado: ('ok', body) | ('raw', texto) | ('error', exc) | ('http', code, retry-after)."""
 
     def __init__(self, steps):
         self.steps = list(steps)
@@ -270,6 +287,10 @@ class _Script:
         kind = self.steps.pop(0)
         if kind[0] == "ok":
             return _FakeResp(kind[1])
+        if kind[0] == "raw":
+            return _FakeRaw(kind[1])
+        if kind[0] == "error":
+            raise kind[1]
         raise _http_error(kind[1], kind[2] if len(kind) > 2 else None)
 
 
@@ -782,7 +803,7 @@ def test_hook_tools_string_no_substring():
         assert h(tool_name="terminal", args={}) is None  # fail-open sem resposta
         assert calls["judge"][0] == "terminal", calls
         line = json.loads(log.read_text().strip())
-        assert line["outcome"] == "fail_open", line
+        assert line["outcome"] == "fail_open" and line["reason"] == "transport", line
     print("ok  hook com tools string: sem substring, fail-open sem chave")
 
 
@@ -836,6 +857,201 @@ def test_cache_size_capped():
     print("ok  cache do judge com teto de tamanho")
 
 
+# --- Ticket 18: fail-open com motivo + contrato estrito de resposta ---
+
+_Q18 = {"q": {"type": "boolean", "instructions": "?"}}
+
+
+def test_fail_reason_no_key():
+    client, script, _ = _enter(_run_dual({}))
+    try:
+        assert client.evaluate({"a": 1}, _Q18) is None
+        assert client.last_fail_reason == "no_key", client.last_fail_reason
+        assert script.calls == []
+    finally:
+        _leave(client)
+    print("ok  sem chave: motivo no_key, transporte intocado")
+
+
+def test_fail_reason_timeout():
+    client, script, _ = _enter(
+        _run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("error", TimeoutError("timed out"))])
+    )
+    try:
+        assert client.evaluate({"a": 1}, _Q18) is None
+        assert client.last_fail_reason == "timeout", client.last_fail_reason
+    finally:
+        _leave(client)
+    print("ok  timeout: motivo timeout")
+
+
+def test_fail_reason_transport():
+    client, script, _ = _enter(
+        _run_dual(
+            {"AI_GATEWAY_API_KEY": "g"},
+            _steps=[("error", _urlerror.URLError("conn refused"))],
+        )
+    )
+    try:
+        assert client.evaluate({"a": 1}, _Q18) is None
+        assert client.last_fail_reason == "transport", client.last_fail_reason
+    finally:
+        _leave(client)
+    print("ok  erro de rede: motivo transport")
+
+
+def test_fail_reason_http_status():
+    client, script, _ = _enter(
+        _run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("http", 500)])
+    )
+    try:
+        assert client.evaluate({"a": 1}, _Q18) is None
+        assert client.last_fail_reason == "http_500", client.last_fail_reason
+        assert len(script.calls) == 1
+    finally:
+        _leave(client)
+    client, script, _ = _enter(
+        _run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("http", 429, "lixo")])
+    )
+    try:
+        assert client.evaluate({"a": 1}, _Q18) is None
+        assert client.last_fail_reason == "http_429", client.last_fail_reason
+    finally:
+        _leave(client)
+    print("ok  http_500 e http_429 (sem retry): motivo http_<status>")
+
+
+def test_fail_reason_parse():
+    client, script, _ = _enter(
+        _run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("raw", "<html>nao e json")])
+    )
+    try:
+        assert client.evaluate({"a": 1}, _Q18) is None
+        assert client.last_fail_reason == "parse", client.last_fail_reason
+    finally:
+        _leave(client)
+    print("ok  corpo nao-JSON: motivo parse")
+
+
+def test_fail_reason_breaker():
+    client, script, _ = _enter(
+        _run_dual(
+            {"AI_GATEWAY_API_KEY": "g"},
+            breaker_threshold=1,
+            _steps=[("http", 429, "lixo")],
+        )
+    )
+    try:
+        assert client.evaluate({"n": 1}, _Q18) is None
+        assert client.last_fail_reason == "http_429", client.last_fail_reason
+        assert client.evaluate({"n": 2}, _Q18) is None
+        assert client.last_fail_reason == "breaker", client.last_fail_reason
+        assert len(script.calls) == 1, script.calls
+    finally:
+        _leave(client)
+    print("ok  breaker aberto: motivo breaker sem tocar o transporte")
+
+
+def test_fail_reason_cleared_on_success():
+    client, script, _ = _enter(
+        _run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("http", 500), ("ok", _GW_BODY)])
+    )
+    try:
+        assert client.evaluate({"n": 1}, _Q18) is None
+        assert client.last_fail_reason == "http_500"
+        assert client.evaluate({"n": 2}, _Q18) is not None
+        assert client.last_fail_reason is None, client.last_fail_reason
+    finally:
+        _leave(client)
+    print("ok  sucesso limpa o motivo da falha anterior")
+
+
+def test_extract_signals():
+    answers = {
+        "destructive": {"type": "boolean", "probability": 0.2},
+        "exfiltration": {"type": "boolean", "probability": 0.9},
+        "impact": {"type": "score", "score": 2.9},
+    }
+    signals, missing = gate.extract_signals(answers, gate.GATE_QUESTIONS)
+    assert signals == {"destructive": 0.2, "exfiltration": 0.9, "impact": 2.9}, signals
+    assert missing == [], missing
+    _, missing = gate.extract_signals(
+        {"destructive": {"type": "boolean", "probability": 0.2}}, gate.GATE_QUESTIONS
+    )
+    assert missing == ["exfiltration", "impact"], missing
+    renamed = dict(answers)
+    renamed["exfiltrated"] = renamed.pop("exfiltration")
+    _, missing = gate.extract_signals(renamed, gate.GATE_QUESTIONS)
+    assert missing == ["exfiltration"], missing
+    bad = dict(answers)
+    bad["destructive"] = {"type": "boolean", "probability": "alta"}
+    _, missing = gate.extract_signals(bad, gate.GATE_QUESTIONS)
+    assert missing == ["destructive"], missing
+    print("ok  extract_signals: ausente, renomeada e malformada viram missing")
+
+
+def test_judge_answer_missing():
+    stub = StubClient(
+        answers={
+            "destructive": {"type": "boolean", "probability": 0.1},
+            "impact": {"type": "score", "score": 0.2},
+        }
+    )
+    v = gate.judge(stub, "terminal", {"command": "ls"}, {})
+    assert v["outcome"] == "fail_open" and v["reason"] == "answer_missing", v
+    assert v["missing"] == ["exfiltration"], v
+    assert "triggered" not in v, v  # nunca clear, nunca 0.0
+    print("ok  pergunta sem resposta: answer_missing, nunca clear")
+
+
+def test_judge_fail_open_carries_client_reason():
+    v = gate.judge(
+        StubClient(answers=None, reason="timeout"), "terminal", {"command": "ls"}, {}
+    )
+    assert v == {"tool": "terminal", "outcome": "fail_open", "reason": "timeout"}, v
+    print("ok  judge repassa o motivo do cliente no fail-open")
+
+
+def test_hook_fail_open_logs_reason():
+    import contextlib
+
+    @contextlib.contextmanager
+    def _real_judge_hook(cfg, client):
+        with _tempfile_hook.TemporaryDirectory() as home:
+            saved = _os_hook.environ.get("HERMES_HOME")
+            _os_hook.environ["HERMES_HOME"] = home
+            log = str(Path(home) / "hook.log")
+            hook = _hook_module()
+            ctx = _HookCtx({**cfg, "log_path": log})
+            hook.register(ctx)
+            old_client_for = gate.client_for
+            gate.client_for = lambda s: client
+            try:
+                yield ctx.hooks["pre_tool_call"], Path(log)
+            finally:
+                gate.client_for = old_client_for
+                _os_hook.environ.pop("HERMES_HOME", None)
+                if saved is not None:
+                    _os_hook.environ["HERMES_HOME"] = saved
+
+    with _real_judge_hook(
+        {"mode": "shadow", "tools": ["terminal"]},
+        StubClient(answers=None, reason="timeout"),
+    ) as (h, log):
+        assert h(tool_name="terminal", args={"command": "ls"}, task_id="t9") is None
+        line = json.loads(log.read_text().strip())
+        assert line["outcome"] == "fail_open" and line["reason"] == "timeout", line
+    with _real_judge_hook(
+        {"mode": "shadow", "tools": ["terminal"]},
+        StubClient(answers={"destructive": {"type": "boolean", "probability": 0.1}}),
+    ) as (h, log):
+        assert h(tool_name="terminal", args={"command": "ls"}) is None
+        line = json.loads(log.read_text().strip())
+        assert line["outcome"] == "fail_open" and line["reason"] == "answer_missing", line
+        assert line["missing"] == ["exfiltration", "impact"], line
+    print("ok  hook loga o motivo do fail-open (timeout, answer_missing)")
+
+
 if __name__ == "__main__":
     for fn in (
         test_redact,
@@ -869,6 +1085,17 @@ if __name__ == "__main__":
         test_env_key_strips,
         test_timeout_clamped,
         test_cache_size_capped,
+        test_fail_reason_no_key,
+        test_fail_reason_timeout,
+        test_fail_reason_transport,
+        test_fail_reason_http_status,
+        test_fail_reason_parse,
+        test_fail_reason_breaker,
+        test_fail_reason_cleared_on_success,
+        test_extract_signals,
+        test_judge_answer_missing,
+        test_judge_fail_open_carries_client_reason,
+        test_hook_fail_open_logs_reason,
     ):
         fn()
     print("\ntodos os testes offline passaram")

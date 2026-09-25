@@ -3,7 +3,9 @@
 Pure stdlib. Backend selection (`backend: auto|typesafe|gateway`, default
 `auto`): TypeSafe direct when TYPESAFE_API_KEY is present, else the gateway
 when AI_GATEWAY_API_KEY is present, else silent. Every failure path returns
-None (fail-open).
+None (fail-open) and records a short machine-readable reason on
+`last_fail_reason` (`no_key | timeout | breaker | http_<status> |
+transport | parse`).
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import logging
 import math
 import os
 import re
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -192,6 +195,23 @@ def retry_after_s(value, now_wall: float) -> float | None:
     return delta if math.isfinite(delta) else None
 
 
+def _classify_error(exc: Exception) -> str:
+    """Map a transport exception to a short fail-open reason (no policy here)."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"http_{exc.code}"
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, (TimeoutError, socket.timeout)) or (
+            "timed out" in str(reason).lower()
+        ):
+            return "timeout"
+    if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)):
+        return "parse"
+    return "transport"
+
+
 class JevClient:
     """One call = one request = typed answers (choice / score / boolean)."""
 
@@ -225,6 +245,8 @@ class JevClient:
         self._urlopen = urllib.request.urlopen
         self._clock = time.monotonic
         self._sleep = time.sleep
+        # Short reason for the last fail-open (None after a success).
+        self.last_fail_reason: str | None = None
 
     def _resolve(self) -> tuple[str | None, str | None]:
         backend = resolve_backend(self.backend)
@@ -280,6 +302,7 @@ class JevClient:
                 logger.debug(
                     "jev-judge: evaluate failed (%s): %s", type(exc).__name__, exc
                 )
+                self.last_fail_reason = f"http_{exc.code}"
                 return None
             self._note_ratelimit(url)
             wait = retry_after_s(
@@ -287,6 +310,7 @@ class JevClient:
                 time.time(),
             )
             if wait is None or wait > self.retry_max_wait_s:
+                self.last_fail_reason = f"http_{exc.code}"
                 return None  # fail-open: no (or too long a) wait instructed
             if wait > 0:
                 self._sleep(wait)
@@ -297,23 +321,30 @@ class JevClient:
                 logger.debug(
                     "jev-judge: retry failed (%s): %s", type(exc2).__name__, exc2
                 )
+                self.last_fail_reason = f"http_{exc2.code}"
                 return None
             except Exception as exc2:  # timeout, network, parse — fail-open
                 logger.debug(
                     "jev-judge: retry failed (%s): %s", type(exc2).__name__, exc2
                 )
+                self.last_fail_reason = _classify_error(exc2)
                 return None
         except Exception as exc:  # timeout, 5xx, network, parse — always fail-open
             logger.debug("jev-judge: evaluate failed (%s): %s", type(exc).__name__, exc)
+            self.last_fail_reason = _classify_error(exc)
             return None
         self._note_success(url)
         return body
 
     def evaluate(self, state, questions: dict) -> dict | None:
-        """Return {"answers", "confidence", "cost", "latency_ms", "usage"} or None."""
+        """Return {"answers", "confidence", "cost", "latency_ms", "usage"} or None.
+
+        On None (fail-open) `last_fail_reason` tells why; on success it is None.
+        """
         backend, key = self._resolve()
         if backend is None or not key:
             logger.debug("jev-judge: no key for backend; skipping")
+            self.last_fail_reason = "no_key"
             return None
 
         cache_key = hashlib.sha256(
@@ -327,6 +358,7 @@ class JevClient:
         now = time.time()
         hit = self._cache.get(cache_key)
         if hit and hit[0] > now:
+            self.last_fail_reason = None
             return hit[1]
 
         if backend == "typesafe":
@@ -360,10 +392,13 @@ class JevClient:
             }
         if self._breaker_open(endpoint):
             logger.debug("jev-judge: breaker open for %s; skipping", endpoint)
+            self.last_fail_reason = "breaker"
             return None
         started = self._clock()
         body = self._post_json(endpoint, payload, headers)
         if body is None:
+            if not self.last_fail_reason:
+                self.last_fail_reason = "transport"
             return None
 
         if backend == "typesafe":
@@ -390,4 +425,5 @@ class JevClient:
         self._cache[cache_key] = (now + self.cache_seconds, result)
         if len(self._cache) > CACHE_MAX_ENTRIES:
             self._cache.pop(next(iter(self._cache)))  # oldest-inserted first
+        self.last_fail_reason = None
         return result

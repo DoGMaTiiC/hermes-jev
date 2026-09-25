@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -127,20 +128,65 @@ def build_state(tool_name: str, args: dict) -> dict:
     }
 
 
+def extract_signals(answers: dict, questions: dict) -> tuple[dict, list]:
+    """Answers -> numeric signals per question; missing/renamed/malformed go to missing.
+
+    Pure function (the gate v2 reuses it). Never fabricates 0.0: a question
+    without a usable numeric signal is reported, not zeroed.
+    """
+    signals: dict = {}
+    missing: list = []
+    for qid, qdef in (questions or {}).items():
+        ans = (answers or {}).get(qid)
+        field = (
+            "score"
+            if isinstance(qdef, dict) and qdef.get("type") == "score"
+            else "probability"
+        )
+        if not isinstance(ans, dict):
+            missing.append(qid)
+            continue
+        try:
+            value = float(ans.get(field))
+        except (TypeError, ValueError):
+            missing.append(qid)
+            continue
+        if not math.isfinite(value):
+            missing.append(qid)
+            continue
+        signals[qid] = value
+    return signals, missing
+
+
 def judge(
     client: JevClient, tool_name: str, args: dict, thresholds: dict
-) -> dict | None:
-    """Ask Jev; return the verdict dict (None on any failure — fail-open)."""
+) -> dict:
+    """Ask Jev; always return the verdict dict (fail-open carries a reason).
+
+    Transport failure -> {"outcome": "fail_open", "reason": <client reason>}.
+    Any asked question without a usable answer -> fail_open answer_missing
+    (never clear, never 0.0).
+    """
     result = client.evaluate(build_state(tool_name, args), GATE_QUESTIONS)
     if not result:
-        return None
+        return {
+            "tool": tool_name,
+            "outcome": "fail_open",
+            "reason": getattr(client, "last_fail_reason", None) or "transport",
+        }
 
-    answers = result["answers"]
-    probs = {
-        "destructive": float(answers.get("destructive", {}).get("probability", 0.0)),
-        "exfiltration": float(answers.get("exfiltration", {}).get("probability", 0.0)),
-        "impact": float(answers.get("impact", {}).get("score", 0.0)),
-    }
+    probs, missing = extract_signals(result.get("answers"), GATE_QUESTIONS)
+    if missing:
+        entry: dict = {
+            "tool": tool_name,
+            "outcome": "fail_open",
+            "reason": "answer_missing",
+            "missing": missing,
+        }
+        for key in ("latency_ms", "cost"):
+            if result.get(key) is not None:
+                entry[key] = result[key]
+        return entry
     thresholds = {**DEFAULTS, **thresholds}
     triggered = []
     if probs["destructive"] >= thresholds["destructive_threshold"]:
