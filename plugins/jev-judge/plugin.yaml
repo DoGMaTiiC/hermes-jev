@@ -58,13 +58,21 @@ config_schema:
   backend:
     type: str
     default: "auto"
-    description: "auto = TypeSafe key wins, else gateway; typesafe|gateway forces one"
+    description: "auto = TypeSafe key, else OpenRouter, else gateway; typesafe|openrouter|gateway forces one"
   typesafe_model:
     type: str
     default: "jev-latest"
   typesafe_base_url:
     type: str
     default: "https://api.typesafe.ai"
+  openrouter_model:
+    type: str
+    default: "~typesafe/jev-latest"
+    description: "Model slug for the openrouter backend (OpenRouter alpha Decisions API)"
+  openrouter_base_url:
+    type: str
+    default: "https://openrouter.ai/api/alpha"
+    description: "Base URL for the openrouter backend; decisions POST to <base>/decisions"
   retry_max_wait_s:
     type: float
     default: 2.0

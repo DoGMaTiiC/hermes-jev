@@ -1,8 +1,8 @@
-"""Jev client — TypeSafe System One, direct or via the Vercel AI Gateway.
+"""Jev client — TypeSafe System One, Vercel AI Gateway, or OpenRouter.
 
-Pure stdlib. Backend selection (`backend: auto|typesafe|gateway`, default
-`auto`): TypeSafe direct when TYPESAFE_API_KEY is present, else the gateway
-when AI_GATEWAY_API_KEY is present, else silent. Every failure path returns
+Pure stdlib. Backend selection (`backend: auto|typesafe|gateway|openrouter`,
+default `auto`) falls back in this order: TypeSafe direct, OpenRouter, gateway,
+then silent when no corresponding key is present. Every failure path returns
 None (fail-open) and records a short machine-readable reason on
 `last_fail_reason` (`no_key | timeout | breaker | http_<status> |
 transport | parse | payload_too_large`).
@@ -30,6 +30,8 @@ DEFAULT_BASE_URL = "https://ai-gateway.vercel.sh/v4/ai"
 DEFAULT_MODEL = "typesafe-ai/jev"
 DEFAULT_TYPESAFE_BASE_URL = "https://api.typesafe.ai"
 DEFAULT_TYPESAFE_MODEL = "jev-latest"
+DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/alpha"
+DEFAULT_OPENROUTER_MODEL = "~typesafe/jev-latest"
 PROTOCOL_VERSION = "0.0.1"
 SPEC_VERSION = "4"
 
@@ -128,18 +130,30 @@ def typesafe_api_key() -> str | None:
     return _env_key("TYPESAFE_API_KEY")
 
 
+def openrouter_api_key() -> str | None:
+    return _env_key("OPENROUTER_API_KEY")
+
+
 def resolve_backend(backend: str = "auto") -> str | None:
-    """Pick 'typesafe' | 'gateway' | None (no key for the wanted backend)."""
+    """Pick 'typesafe' | 'openrouter' | 'gateway' | None (no key for the wanted backend)."""
     want = (backend or "auto").strip().lower()
-    if want not in ("auto", "typesafe", "gateway"):
+    if want not in ("auto", "typesafe", "openrouter", "gateway"):
         want = "auto"
-    has_ts, has_gw = bool(typesafe_api_key()), bool(api_key())
+    has_ts, has_or, has_gw = (
+        bool(typesafe_api_key()),
+        bool(openrouter_api_key()),
+        bool(api_key()),
+    )
     if want == "typesafe":
         return "typesafe" if has_ts else None
+    if want == "openrouter":
+        return "openrouter" if has_or else None
     if want == "gateway":
         return "gateway" if has_gw else None
     if has_ts:
         return "typesafe"
+    if has_or:
+        return "openrouter"
     return "gateway" if has_gw else None
 
 
@@ -257,6 +271,8 @@ class JevClient:
         backend: str = "auto",
         typesafe_model: str = DEFAULT_TYPESAFE_MODEL,
         typesafe_base_url: str = DEFAULT_TYPESAFE_BASE_URL,
+        openrouter_model: str = DEFAULT_OPENROUTER_MODEL,
+        openrouter_base_url: str = DEFAULT_OPENROUTER_BASE_URL,
         retry_max_wait_s: float = 2.0,
         breaker_threshold: int = 3,
         breaker_cooldown_s: float = 120,
@@ -269,6 +285,8 @@ class JevClient:
         self.backend = backend
         self.typesafe_model = typesafe_model
         self.typesafe_base_url = typesafe_base_url.rstrip("/")
+        self.openrouter_model = openrouter_model
+        self.openrouter_base_url = openrouter_base_url.rstrip("/")
         self.retry_max_wait_s = float(retry_max_wait_s)
         self.breaker_threshold = int(breaker_threshold)
         self.breaker_cooldown_s = float(breaker_cooldown_s)
@@ -287,6 +305,8 @@ class JevClient:
             return backend, typesafe_api_key()
         if backend == "gateway":
             return backend, api_key()
+        if backend == "openrouter":
+            return backend, openrouter_api_key()
         return None, None
 
     def _breaker_open(self, endpoint: str) -> bool:
@@ -409,6 +429,24 @@ class JevClient:
                 "Authorization": f"Bearer {key}",
                 "content-type": "application/json",
             }
+        elif backend == "openrouter":
+            # OpenRouter alpha Decisions API: same wire question shapes as
+            # TypeSafe (noul/choice/score with criteria), different endpoint,
+            # model slug goes IN the payload, key is the OpenRouter one.
+            endpoint = f"{self.openrouter_base_url}/decisions"
+            payload = json.dumps(
+                {
+                    "model": self.openrouter_model,
+                    "state": state,
+                    "questions": to_typesafe_questions(questions),
+                },
+                ensure_ascii=False,
+                default=str,
+            ).encode()
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "content-type": "application/json",
+            }
         else:
             endpoint = f"{self.base_url}/evaluation-model"
             payload = json.dumps(
@@ -439,9 +477,12 @@ class JevClient:
             if not self.last_fail_reason:
                 self.last_fail_reason = "transport"
             return None
+        if not isinstance(body, dict) or not isinstance(body.get("answers"), dict):
+            logger.debug("jev-judge: malformed provider response; fail-open")
+            return None
+        raw_answers = body["answers"]
 
         if backend == "typesafe":
-            raw_answers = body.get("answers", {})
             result = {
                 "answers": normalize_typesafe_answers(raw_answers),
                 "confidence": typesafe_confidence(raw_answers),
@@ -449,9 +490,18 @@ class JevClient:
                 "usage": body.get("usage"),
                 "latency_ms": round((self._clock() - started) * 1000),
             }
+        elif backend == "openrouter":
+            # Same answer shapes as TypeSafe direct (noul/choice/score).
+            result = {
+                "answers": normalize_typesafe_answers(raw_answers),
+                "confidence": typesafe_confidence(raw_answers),
+                "cost": None,  # usage reported in tokens; billed via OpenRouter key
+                "usage": body.get("usage"),
+                "latency_ms": round((self._clock() - started) * 1000),
+            }
         else:
             result = {
-                "answers": body.get("answers", {}),
+                "answers": raw_answers,
                 "confidence": (
                     body.get("providerMetadata", {}).get("typesafe", {}) or {}
                 ).get("confidence", {}),
