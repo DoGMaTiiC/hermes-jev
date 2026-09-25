@@ -1052,6 +1052,136 @@ def test_hook_fail_open_logs_reason():
     print("ok  hook loga o motivo do fail-open (timeout, answer_missing)")
 
 
+# --- Ticket 19: transporte endurecido + normalização estrita ---
+
+import urllib.request as _urlrequest
+
+
+def _opener_uses_proxy(opener):
+    """True se algum ProxyHandler atua nas cadeias http/https do opener."""
+    chains = opener.handle_open.get("http", []) + opener.handle_open.get("https", [])
+    return any(isinstance(h, _urlrequest.ProxyHandler) for h in chains)
+
+
+def test_transport_default_hardened():
+    with _run_dual({}):
+        fresh = jev.JevClient()  # fresco: _dual_client troca _urlopen pelo stub
+        assert fresh._urlopen is jev._urlopen, "default deve ser o transporte endurecido"
+        assert fresh._urlopen is not _urlrequest.urlopen
+        assert any(isinstance(h, jev._NoRedirect) for h in jev._OPENER.handlers)
+        assert not _opener_uses_proxy(jev._OPENER)
+    print("ok  transporte default: sem redirect, sem proxy do ambiente")
+
+
+def test_transport_redirect_fail_open():
+    client, script, _ = _enter(_run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("http", 302)]))
+    try:
+        assert client.evaluate({"a": 1}, _Q18) is None
+        assert client.last_fail_reason == "http_302", client.last_fail_reason
+        assert len(script.calls) == 1, script.calls  # 3xx nunca é seguido
+    finally:
+        _leave(client)
+    redir = jev._NoRedirect().redirect_request(
+        object(), None, 302, "Found", {}, "https://x.invalid/"
+    )
+    assert redir is None, redir
+    print("ok  302 vira fail-open http_302 sem seguir redirect")
+
+
+def test_transport_ignores_proxy_env():
+    saved = {n: _os.environ.get(n) for n in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")}
+    try:
+        for n in saved:
+            _os.environ[n] = "http://proxy.invalid:8080"
+        assert _urlrequest.getproxies(), "sanidade: o env vaza para o default do urllib"
+        assert _opener_uses_proxy(_urlrequest.build_opener()), "sanidade: opener default usa proxy"
+        assert not _opener_uses_proxy(jev._OPENER), "opener endurecido ignora o env"
+    finally:
+        for n, v in saved.items():
+            if v is None:
+                _os.environ.pop(n, None)
+            else:
+                _os.environ[n] = v
+    print("ok  proxy do ambiente ignorado mesmo com http(s)_proxy setado")
+
+
+def test_payload_cap_fail_open():
+    big = {"action": "x", "blob": "y" * (jev.MAX_PAYLOAD_BYTES + 1)}
+    client, script, _ = _enter(_run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("ok", _GW_BODY)]))
+    try:
+        assert client.evaluate(big, _Q18) is None
+        assert client.last_fail_reason == "payload_too_large", client.last_fail_reason
+        assert script.calls == [], script.calls  # nada saiu: nunca vira veredito
+        assert client.evaluate({"a": 1}, _Q18) is not None  # sob o cap, passa
+        assert len(script.calls) == 1, script.calls
+    finally:
+        _leave(client)
+    print("ok  payload acima do cap: nada enviado, fail-open payload_too_large")
+
+
+def test_normalize_strict_noul():
+    out = jev.normalize_typesafe_answers(
+        {
+            "ok": {"type": "noul", "noul": 0.97},
+            "zero": {"type": "noul", "noul": 0.0},  # 0.0 explícito do servidor passa
+            "missing": {"type": "noul"},
+            "null": {"type": "noul", "noul": None},
+            "garbage": {"type": "noul", "noul": "alta"},
+            "nan": {"type": "noul", "noul": "nan"},
+            "inf": {"type": "noul", "noul": float("inf")},
+            "choice": {"type": "choice", "choice": "b"},
+        }
+    )
+    assert out["ok"] == {"type": "boolean", "probability": 0.97}, out
+    assert out["zero"] == {"type": "boolean", "probability": 0.0}, out
+    assert out["choice"] == {"type": "choice", "choice": "b"}, out
+    for qid in ("missing", "null", "garbage", "nan", "inf"):
+        assert qid not in out, (qid, out)  # nunca fabrica 0.0: some, o gate lê missing
+    print("ok  noul ausente/malformado some (nunca 0.0); 0.0 explícito passa")
+
+
+def test_malformed_noul_becomes_missing():
+    body = {"answers": {"destructive": {"type": "noul"}}, "usage": {}}
+    client, _, _ = _enter(_run_dual({"TYPESAFE_API_KEY": "t"}, _steps=[("ok", body)]))
+    try:
+        res = client.evaluate({"a": 1}, _Q18)
+        assert res is not None and res["answers"] == {}, res
+        _, missing = gate.extract_signals(res["answers"], gate.GATE_QUESTIONS)
+        assert "destructive" in missing, missing  # defeito, nunca veredito favorável
+    finally:
+        _leave(client)
+    print("ok  noul malformado no fio vira missing no gate")
+
+
+def test_jev_ask_logs_reason():
+    class _FailCtx:
+        def __init__(self, cfg):
+            self.cfg = dict(cfg)
+
+        def get_config(self, key, default=None):
+            return self.cfg.get(key, default)
+
+    old_client, old_ctx = gate.JevClient, toolsmod._CTX
+    with _tempfile.TemporaryDirectory() as d:
+        log = str(Path(d) / "ask.log")
+        toolsmod.bind(_FailCtx({"jev_model": "reason/model", "log_path": log}))
+        gate.JevClient = lambda **kw: StubClient(answers=None, reason="timeout")
+        try:
+            out = json.loads(
+                toolsmod.jev_ask(
+                    {"state": "x", "questions": {"q": {"type": "boolean", "instructions": "?"}}}
+                )
+            )
+        finally:
+            gate.JevClient = old_client
+            toolsmod.bind(old_ctx)
+        assert out["note"].startswith("fail-open"), out
+        line = json.loads(Path(log).read_text().strip())
+        assert line["source"] == "ask" and line["outcome"] == "fail_open", line
+        assert line["reason"] == "timeout", line
+    print("ok  jev_ask loga reason no fail-open como o hook")
+
+
 if __name__ == "__main__":
     for fn in (
         test_redact,
@@ -1096,6 +1226,13 @@ if __name__ == "__main__":
         test_judge_answer_missing,
         test_judge_fail_open_carries_client_reason,
         test_hook_fail_open_logs_reason,
+        test_transport_default_hardened,
+        test_transport_redirect_fail_open,
+        test_transport_ignores_proxy_env,
+        test_payload_cap_fail_open,
+        test_normalize_strict_noul,
+        test_malformed_noul_becomes_missing,
+        test_jev_ask_logs_reason,
     ):
         fn()
     print("\ntodos os testes offline passaram")
