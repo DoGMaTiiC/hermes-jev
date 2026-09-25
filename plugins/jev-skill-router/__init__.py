@@ -1,10 +1,11 @@
 """jev-skill-router — name the one skill that fits the turn, before the model call.
 
-Typed routing via TypeSafe Jev (System One) on the Vercel AI Gateway: before the
-model call, Jev picks at most one skill from the live roster and the hook injects
-a single ``<skill_relevance>`` line into the user-message context. Silence when
-nothing fits. Opt-in (``mode: off`` by default), fail-open on every error path,
-one JSON line logged per decision. Stdlib only.
+Typed routing via TypeSafe Jev (System One), direct or through OpenRouter / the
+Vercel AI Gateway: before the model call, Jev picks at most one skill from the
+live roster and the hook injects a single ``<skill_relevance>`` line into the
+user-message context. Silence when nothing fits. Opt-in (``mode: off`` by
+default), fail-open on every error path, one JSON line logged per decision.
+Stdlib only.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ ROSTER_TTL_S = 300  # installs change under us; re-scan at most this often
 _CLI_HELP = "Typed skill routing via Jev (on|off|auto|status|suggest|check)"
 _CLI_DESCRIPTION = (
     "Names the one skill from the live roster that fits the current turn, "
-    "via TypeSafe Jev on the Vercel AI Gateway. Says nothing when nothing fits."
+    "via TypeSafe Jev. Says nothing when nothing fits."
 )
 
 # Bound by register(); the CLI handler runs without a ctx argument.
@@ -68,6 +69,14 @@ def _settings(ctx) -> dict:
         "typesafe_base_url": str(
             ctx.get_config("typesafe_base_url", "https://api.typesafe.ai")
             or "https://api.typesafe.ai"
+        ),
+        "openrouter_model": str(
+            ctx.get_config("openrouter_model", "~typesafe/jev-latest")
+            or "~typesafe/jev-latest"
+        ),
+        "openrouter_base_url": str(
+            ctx.get_config("openrouter_base_url", "https://openrouter.ai/api/alpha")
+            or "https://openrouter.ai/api/alpha"
         ),
         "retry_max_wait_s": num("retry_max_wait_s", 2.0, float),
         "breaker_threshold": num("breaker_threshold", 3, int),
@@ -153,6 +162,10 @@ def decide(settings: dict, text: str, *, client=None, source: str = "hook"):
                 typesafe_base_url=str(
                     settings.get("typesafe_base_url", "https://api.typesafe.ai")
                 ),
+                openrouter_model=str(settings.get("openrouter_model", "~typesafe/jev-latest")),
+                openrouter_base_url=str(
+                    settings.get("openrouter_base_url", "https://openrouter.ai/api/alpha")
+                ),
                 retry_max_wait_s=float(settings.get("retry_max_wait_s", 2.0)),
                 breaker_threshold=int(settings.get("breaker_threshold", 3)),
                 breaker_cooldown_s=float(settings.get("breaker_cooldown_s", 120)),
@@ -219,7 +232,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     subs = subparser.add_subparsers(dest="jev_skill_router_action")
     subs.add_parser("on", help="Turn routing on (every eligible turn asks Jev)")
     subs.add_parser("off", help="Turn routing off (default; nothing leaves the machine)")
-    subs.add_parser("auto", help="Route only when AI_GATEWAY_API_KEY is present")
+    subs.add_parser("auto", help="Route when a TypeSafe, OpenRouter, or gateway key is present")
     subs.add_parser("status", help="Show mode, roster, thresholds, endpoint, log path")
     suggest = subs.add_parser("suggest", help="Run one live routing decision on <text>")
     suggest.add_argument("text", help="The request text to route")
@@ -233,6 +246,7 @@ def _cmd_status(ctx, settings: dict) -> int:
     backend = _client_mod.resolve_backend(settings.get("backend", "auto"))
     gw = "present" if _client_mod.api_key() else "missing"
     ts = "present" if _client_mod.typesafe_api_key() else "missing"
+    or_key = "present" if _client_mod.openrouter_api_key() else "missing"
     print(f"mode:          {settings['mode']}")
     print(f"roster:        {len(skills)} skills from {roster_dir(settings)}")
     print(f"gate/fits:     {settings['gate']}/{settings['fits']}")
@@ -242,7 +256,8 @@ def _cmd_status(ctx, settings: dict) -> int:
     print(f"backend:       {settings.get('backend', 'auto')} (resolved: {backend or 'silent'})")
     print(f"endpoint:      {settings['jev_model']} @ {settings['jev_base_url']}")
     print(f"typesafe:      {settings.get('typesafe_model', 'jev-latest')} @ {settings.get('typesafe_base_url', 'https://api.typesafe.ai')}")
-    print(f"keys:          TYPESAFE_API_KEY={ts}  AI_GATEWAY_API_KEY={gw}")
+    print(f"openrouter:    {settings.get('openrouter_model', '~typesafe/jev-latest')} @ {settings.get('openrouter_base_url', 'https://openrouter.ai/api/alpha')}")
+    print(f"keys:          TYPESAFE_API_KEY={ts}  OPENROUTER_API_KEY={or_key}  AI_GATEWAY_API_KEY={gw}")
     print(f"log:           {log_file(settings)}")
     return 0
 

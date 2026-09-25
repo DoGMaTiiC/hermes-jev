@@ -2,7 +2,8 @@ name: jev-skill-router
 version: 0.1.0
 description: >-
   Names the one skill from your live roster that fits the turn, before the model call —
-  typed routing via TypeSafe Jev on the Vercel AI Gateway. Says nothing when nothing fits.
+  typed routing via TypeSafe Jev on TypeSafe, OpenRouter, or the Vercel AI Gateway.
+  Says nothing when nothing fits.
   Stdlib only.
 author: Patrick (DoGMaTiiC)
 license: MIT
@@ -59,13 +60,19 @@ config_schema:
   backend:
     type: str
     default: "auto"
-    description: "auto = TypeSafe key wins, else gateway; typesafe|gateway forces one"
+    description: "auto = TypeSafe key wins, else OpenRouter, else gateway; typesafe|openrouter|gateway forces one"
   typesafe_model:
     type: str
     default: "jev-latest"
   typesafe_base_url:
     type: str
     default: "https://api.typesafe.ai"
+  openrouter_model:
+    type: str
+    default: "~typesafe/jev-latest"
+  openrouter_base_url:
+    type: str
+    default: "https://openrouter.ai/api/alpha"
   retry_max_wait_s:
     type: float
     default: 2.0

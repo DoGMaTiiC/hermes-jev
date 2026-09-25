@@ -4,13 +4,14 @@
 Hermes Agent: before the model call, Jev names **at most one** skill from the
 live roster for the current turn, and the plugin injects a single
 `<skill_relevance>` line into the user-message context. It says nothing when
-nothing fits. Two routes, picked by the `backend` setting (`auto` by
-default: `TYPESAFE_API_KEY` wins, else `AI_GATEWAY_API_KEY`) — pure stdlib,
-no Node, no SDK.
+nothing fits. Three routes, picked by the `backend` setting (`auto` by
+default: `TYPESAFE_API_KEY` wins, else `OPENROUTER_API_KEY`, else
+`AI_GATEWAY_API_KEY`) — pure stdlib, no Node, no SDK.
 
 | Route             | Endpoint                                                          | Key                  | Questions                      | Confidence                             | Cost                            |
 | ----------------- | ----------------------------------------------------------------- | -------------------- | ------------------------------ | -------------------------------------- | ------------------------------- |
 | TypeSafe direto   | `POST https://api.typesafe.ai/v1/systemone` (`model: jev-latest`) | `TYPESAFE_API_KEY`   | `noul` / `choice` / `score`    | inline per answer                      | none (`usage` in tokens)        |
+| OpenRouter        | `POST https://openrouter.ai/api/alpha/decisions` (`~typesafe/jev-latest`) | `OPENROUTER_API_KEY` | `noul` / `choice` / `score` | inline per answer                      | provider billing / usage        |
 | Vercel AI Gateway | `POST {jev_base_url}/evaluation-model` (`typesafe-ai/jev`)        | `AI_GATEWAY_API_KEY` | `boolean` / `choice` / `score` | `providerMetadata.typesafe.confidence` | `providerMetadata.gateway.cost` |
 
 Yes/no questions are `boolean` internally and mapped to `noul` on the
@@ -42,9 +43,10 @@ hermes plugins install DoGMaTiiC/hermes-jev/plugins/jev-skill-router
 hermes jev-skill-router auto   # or: on
 ```
 
-Requires `TYPESAFE_API_KEY` (direct) and/or `AI_GATEWAY_API_KEY` (Vercel AI
-Gateway key) and Hermes ≥ 0.21. No key at all: the plugin loads and stays
-silent.
+Requires one of `TYPESAFE_API_KEY` (direct), `OPENROUTER_API_KEY` (OpenRouter
+Decisions API), or `AI_GATEWAY_API_KEY` (Vercel AI Gateway key) and Hermes ≥
+0.21. The OpenRouter route also checks Hermes' OpenRouter credential pool when
+`OPENROUTER_API_KEY` is not set. No key at all: the plugin loads and stays silent.
 
 ## Settings
 
@@ -60,9 +62,11 @@ silent.
 | `excerpt`            | `700`                                     | SKILL.md characters each candidate brings                                                                      |
 | `timeout_s`          | `4.0`                                     | Per-attempt timeout (worst case per call: 2×`timeout_s` + `retry_max_wait_s`)                                  |
 | `cache_seconds`      | `300`                                     | Identical calls answered from cache per window                                                                 |
-| `backend`            | `auto`                                    | `auto` = TypeSafe key wins, else gateway · `typesafe`/`gateway` forces one                                     |
+| `backend`            | `auto`                                    | `auto` = TypeSafe key wins, else OpenRouter, else gateway · `typesafe`/`openrouter`/`gateway` forces one        |
 | `typesafe_model`     | `jev-latest`                              | TypeSafe direto model                                                                                          |
 | `typesafe_base_url`  | `https://api.typesafe.ai`                 | TypeSafe direto endpoint override                                                                              |
+| `openrouter_model`   | `~typesafe/jev-latest`                    | OpenRouter Decisions API model                                                                                 |
+| `openrouter_base_url`| `https://openrouter.ai/api/alpha`         | OpenRouter Decisions API base URL                                                                              |
 | `retry_max_wait_s`   | `2.0`                                     | Retry once on 429/529 only if Retry-After waits at most this                                                   |
 | `breaker_threshold`  | `3`                                       | Consecutive 429/529s before going silent                                                                       |
 | `breaker_cooldown_s` | `120`                                     | Silence window after the breaker opens                                                                         |

@@ -429,6 +429,19 @@ _TS_BODY = {
     "usage": {"input_tokens": 10, "output_tokens": 5},
 }
 
+_OR_BODY = {
+    "answers": {
+        "urgent": {"type": "noul", "noul": 0.88},
+        "which": {
+            "type": "choice",
+            "choice": "alpha",
+            "probabilities": {"alpha": 0.7},
+            "confidence": 0.8,
+        },
+    },
+    "usage": {"input_tokens": 10, "output_tokens": 0, "cost": 0.00002},
+}
+
 _GW_BODY = {
     "answers": {"which": {"choice": "alpha", "probabilities": {"alpha": 0.7}}},
     "providerMetadata": {
@@ -440,6 +453,7 @@ _GW_BODY = {
 
 _Q = {"q": {"type": "boolean", "instructions": "?"}}
 _TS_URL = "https://api.typesafe.ai/v1/systemone"
+_OR_URL = "https://openrouter.ai/api/alpha/decisions"
 _GW_URL = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
 
 
@@ -450,10 +464,10 @@ def _dual_client(keys, **kw):
     with tempfile.TemporaryDirectory() as home:
         saved = {
             n: os.environ.get(n)
-            for n in ("TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")
+            for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")
         }
         try:
-            for n in ("TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY"):
+            for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY"):
                 os.environ.pop(n, None)
             for n, v in keys.items():
                 os.environ[n] = v
@@ -495,6 +509,8 @@ def test_settings_dual_defaults():
     assert s["backend"] == "auto", s
     assert s["typesafe_model"] == "jev-latest", s
     assert s["typesafe_base_url"] == "https://api.typesafe.ai", s
+    assert s["openrouter_model"] == "~typesafe/jev-latest", s
+    assert s["openrouter_base_url"] == "https://openrouter.ai/api/alpha", s
     assert s["retry_max_wait_s"] == 2.0, s
     assert s["breaker_threshold"] == 3, s
     assert s["breaker_cooldown_s"] == 120, s
@@ -509,9 +525,10 @@ def test_hook_auto_silent_without_key():
         (home / "skills").mkdir(parents=True)
         saved = {
             n: os.environ.get(n)
-            for n in ("TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")
+            for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")
         }
         os.environ.pop("TYPESAFE_API_KEY", None)
+        os.environ.pop("OPENROUTER_API_KEY", None)
         os.environ.pop("AI_GATEWAY_API_KEY", None)
         os.environ["HERMES_HOME"] = str(home)
         try:
@@ -575,20 +592,229 @@ def test_gateway_confidence_and_cost():
     print("ok  gateway: confiança via providerMetadata, custo repassado")
 
 
+def test_openrouter_decisions_endpoint():
+    client, script, _ = _enter(
+        _run_dual({"OPENROUTER_API_KEY": "or-key"}, _steps=[("ok", _OR_BODY)])
+    )
+    try:
+        res = client.evaluate({"request": "x"}, _Q)
+        assert res is not None
+        url, headers, payload = script.calls[0]
+        assert url == _OR_URL, url
+        assert headers.get("authorization") == "Bearer or-key", headers
+        assert payload["model"] == "~typesafe/jev-latest", payload
+        assert payload["questions"] == {"q": {"type": "noul", "instructions": "?"}}, payload
+        assert res["answers"]["urgent"] == {"type": "boolean", "probability": 0.88}, res
+        assert res["answers"]["which"]["choice"] == "alpha", res
+        assert res["confidence"] == {"which": 0.8}, res["confidence"]
+        assert res["cost"] == 0.00002, res
+    finally:
+        _leave(client)
+    print("ok  openrouter decisions: noul mapping e endpoint alpha")
+
+
+def test_openrouter_pool_runtime_key_import_hook():
+    """OpenRouter pool lookup uses Hermes' runtime key resolver before raw auth.json."""
+    class Entry:
+        runtime_api_key = "pool-runtime-key"
+
+    class Pool:
+        def select(self):
+            return Entry()
+
+        def peek(self):
+            return Entry()
+
+    fake_agent = types.ModuleType("agent")
+    fake_pool = types.ModuleType("agent.credential_pool")
+    fake_pool.load_pool = lambda provider: Pool()
+    old_agent = sys.modules.get("agent")
+    old_pool = sys.modules.get("agent.credential_pool")
+    sys.modules["agent"] = fake_agent
+    sys.modules["agent.credential_pool"] = fake_pool
+    saved = {n: os.environ.get(n) for n in ("OPENROUTER_API_KEY", "HERMES_HOME")}
+    try:
+        os.environ.pop("OPENROUTER_API_KEY", None)
+        with tempfile.TemporaryDirectory() as home:
+            Path(home, "auth.json").write_text(
+                json.dumps({"credential_pool": {"openrouter": [{"access_token": "stale-disk-key"}]}}),
+                encoding="utf-8",
+            )
+            os.environ["HERMES_HOME"] = home
+            assert C.openrouter_api_key() == "pool-runtime-key"
+    finally:
+        for n, v in saved.items():
+            if v is None:
+                os.environ.pop(n, None)
+            else:
+                os.environ[n] = v
+        if old_agent is None:
+            sys.modules.pop("agent", None)
+        else:
+            sys.modules["agent"] = old_agent
+        if old_pool is None:
+            sys.modules.pop("agent.credential_pool", None)
+        else:
+            sys.modules["agent.credential_pool"] = old_pool
+    print("ok  openrouter credential pool usa runtime_api_key")
+
+
+def test_openrouter_pool_empty_selection_does_not_reuse_disk_key():
+    """A loaded Hermes pool with no selected entry must not fall back to auth.json."""
+    class Pool:
+        def select(self):
+            return None
+
+        def peek(self):
+            return None
+
+    fake_agent = types.ModuleType("agent")
+    fake_pool = types.ModuleType("agent.credential_pool")
+    fake_pool.load_pool = lambda provider: Pool()
+    old_agent = sys.modules.get("agent")
+    old_pool = sys.modules.get("agent.credential_pool")
+    sys.modules["agent"] = fake_agent
+    sys.modules["agent.credential_pool"] = fake_pool
+    saved = {n: os.environ.get(n) for n in ("OPENROUTER_API_KEY", "HERMES_HOME")}
+    try:
+        os.environ.pop("OPENROUTER_API_KEY", None)
+        with tempfile.TemporaryDirectory() as home:
+            Path(home, "auth.json").write_text(
+                json.dumps({"credential_pool": {"openrouter": [{"access_token": "stale-disk-key"}]}}),
+                encoding="utf-8",
+            )
+            os.environ["HERMES_HOME"] = home
+            assert C.openrouter_api_key() == ""
+    finally:
+        for n, v in saved.items():
+            if v is None:
+                os.environ.pop(n, None)
+            else:
+                os.environ[n] = v
+        if old_agent is None:
+            sys.modules.pop("agent", None)
+        else:
+            sys.modules["agent"] = old_agent
+        if old_pool is None:
+            sys.modules.pop("agent.credential_pool", None)
+        else:
+            sys.modules["agent.credential_pool"] = old_pool
+    print("ok  openrouter credential pool vazio nao reaproveita auth.json")
+
+
+def test_openrouter_pool_detection_uses_peek_not_select():
+    """Backend detection may inspect the pool but must not rotate it."""
+    class Entry:
+        runtime_api_key = "pool-runtime-key"
+
+    class Pool:
+        select_calls = 0
+        peek_calls = 0
+
+        def select(self):
+            type(self).select_calls += 1
+            return Entry()
+
+        def peek(self):
+            type(self).peek_calls += 1
+            return Entry()
+
+    fake_agent = types.ModuleType("agent")
+    fake_pool = types.ModuleType("agent.credential_pool")
+    fake_pool.load_pool = lambda provider: Pool()
+    old_agent = sys.modules.get("agent")
+    old_pool = sys.modules.get("agent.credential_pool")
+    sys.modules["agent"] = fake_agent
+    sys.modules["agent.credential_pool"] = fake_pool
+    saved = {n: os.environ.get(n) for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")}
+    try:
+        for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY"):
+            os.environ.pop(n, None)
+        with tempfile.TemporaryDirectory() as home:
+            os.environ["HERMES_HOME"] = home
+            assert C.resolve_backend("auto") == "openrouter"
+            assert Pool.peek_calls == 1
+            assert Pool.select_calls == 0
+            client, script, _ = _enter(_run_dual({}, _steps=[("ok", _OR_BODY)]))
+            try:
+                assert client.evaluate({"request": "x"}, _Q) is not None
+                assert script.calls[0][1].get("authorization") == "Bearer pool-runtime-key"
+                assert client.evaluate({"request": "x"}, _Q) is not None
+                assert len(script.calls) == 1
+            finally:
+                _leave(client)
+            assert Pool.select_calls == 1
+    finally:
+        for n, v in saved.items():
+            if v is None:
+                os.environ.pop(n, None)
+            else:
+                os.environ[n] = v
+        if old_agent is None:
+            sys.modules.pop("agent", None)
+        else:
+            sys.modules["agent"] = old_agent
+        if old_pool is None:
+            sys.modules.pop("agent.credential_pool", None)
+        else:
+            sys.modules["agent.credential_pool"] = old_pool
+    print("ok  openrouter credential pool usa peek para detectar")
+
+
+def test_openrouter_malformed_response_shapes_fail_open():
+    client, _, _ = _enter(
+        _run_dual({"OPENROUTER_API_KEY": "or-key"}, _steps=[("ok", ["not", "an", "object"])])
+    )
+    try:
+        assert client.evaluate({"request": "x"}, _Q) is None
+    finally:
+        _leave(client)
+
+    body = dict(_OR_BODY)
+    body["usage"] = ["not", "a", "mapping"]
+    client, _, _ = _enter(
+        _run_dual({"OPENROUTER_API_KEY": "or-key"}, _steps=[("ok", body)])
+    )
+    try:
+        res = client.evaluate({"request": "x"}, _Q)
+        assert res is not None
+        assert res["cost"] is None, res
+        assert res["usage"] == {}, res
+    finally:
+        _leave(client)
+
+    body = dict(_OR_BODY)
+    body["answers"] = ["not", "a", "mapping"]
+    client, _, _ = _enter(
+        _run_dual({"OPENROUTER_API_KEY": "or-key"}, _steps=[("ok", body)])
+    )
+    try:
+        assert client.evaluate({"request": "x"}, _Q) is None
+    finally:
+        _leave(client)
+    print("ok  openrouter respostas malformadas falham abertas")
+
+
 def test_backend_selection():
     cases = [
-        ({"TYPESAFE_API_KEY": "t", "AI_GATEWAY_API_KEY": "g"}, "auto", "typesafe", _TS_URL),
+        ({"TYPESAFE_API_KEY": "t", "OPENROUTER_API_KEY": "o", "AI_GATEWAY_API_KEY": "g"}, "auto", "typesafe", _TS_URL),
+        ({"OPENROUTER_API_KEY": "o", "AI_GATEWAY_API_KEY": "g"}, "auto", "openrouter", _OR_URL),
         ({"AI_GATEWAY_API_KEY": "g"}, "auto", "gateway", _GW_URL),
         ({"TYPESAFE_API_KEY": "t"}, "auto", "typesafe", _TS_URL),
+        ({"OPENROUTER_API_KEY": "o"}, "auto", "openrouter", _OR_URL),
         ({}, "auto", None, None),
-        ({"TYPESAFE_API_KEY": "", "AI_GATEWAY_API_KEY": "g"}, "auto", "gateway", _GW_URL),
+        ({"TYPESAFE_API_KEY": "", "OPENROUTER_API_KEY": "o", "AI_GATEWAY_API_KEY": "g"}, "auto", "openrouter", _OR_URL),
         ({"AI_GATEWAY_API_KEY": "g"}, "typesafe", None, None),
+        ({"OPENROUTER_API_KEY": "o"}, "typesafe", None, None),
         ({"TYPESAFE_API_KEY": "t"}, "gateway", None, None),
+        ({"OPENROUTER_API_KEY": "o"}, "gateway", None, None),
+        ({"AI_GATEWAY_API_KEY": "g"}, "openrouter", None, None),
+        ({"OPENROUTER_API_KEY": "o"}, "openrouter", "openrouter", _OR_URL),
         ({"TYPESAFE_API_KEY": "t", "AI_GATEWAY_API_KEY": "g"}, "gateway", "gateway", _GW_URL),
         ({"TYPESAFE_API_KEY": "t", "AI_GATEWAY_API_KEY": "g"}, "bogus", "typesafe", _TS_URL),
     ]
     for keys, backend, want, url in cases:
-        steps = [("ok", _GW_BODY)] if want else []
+        steps = [("ok", _OR_BODY if want in ("typesafe", "openrouter") else _GW_BODY)] if want else []
         client, script, _ = _enter(_run_dual(keys, backend=backend, _steps=steps))
         try:
             assert C.resolve_backend(backend) == want, (keys, backend, want)
@@ -600,7 +826,7 @@ def test_backend_selection():
                 assert script.calls[0][0] == url, script.calls[0][0]
         finally:
             _leave(client)
-    print("ok  backend auto|typesafe|gateway resolve e silencia sem chave")
+    print("ok  backend auto|typesafe|openrouter|gateway resolve e silencia sem chave")
 
 
 def test_retry_after_seconds():
@@ -871,6 +1097,11 @@ if __name__ == "__main__":
         test_hook_auto_silent_without_key,
         test_typesafe_noul_mapping,
         test_gateway_confidence_and_cost,
+        test_openrouter_decisions_endpoint,
+        test_openrouter_pool_runtime_key_import_hook,
+        test_openrouter_pool_empty_selection_does_not_reuse_disk_key,
+        test_openrouter_pool_detection_uses_peek_not_select,
+        test_openrouter_malformed_response_shapes_fail_open,
         test_backend_selection,
         test_retry_after_seconds,
         test_retry_after_http_date,
