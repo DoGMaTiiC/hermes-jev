@@ -35,8 +35,13 @@ hermes plugins install DoGMaTiiC/hermes-jev/plugins/jev-judge
 ## What it does
 
 **Gate** (`pre_tool_call`, shadow by default): before `terminal`, `write_file`
-and `patch` run, one Jev request judges them — _destructive? exfiltration?
-impact if unwanted?_ Every decision lands in a JSONL log.
+and `patch` run, one Jev request judges them. v1 (default) asks the
+inherited triple — _destructive? exfiltration? impact if unwanted?_ —
+while `gate_version: v2` (opt-in) asks six separated signals in the same
+request (reads_secrets × sends_outbound + blast_radius + self_advocating,
+then destructive / impact) and applies a deterministic ladder. Any asked
+question without a usable answer fails open as `answer_missing` — never
+clear, never 0.0. Every decision lands in a JSONL log.
 
 | Mode               | On a triggered call                                            |
 | ------------------ | -------------------------------------------------------------- |
@@ -84,9 +89,14 @@ retry can take up to ~2×`timeout_s` + `retry_max_wait_s` (~8s at defaults).
 | `breaker_threshold`                    | `3`                                      | Consecutive 429/529s before going silent                                                            |
 | `breaker_cooldown_s`                   | `120`                                    | Silence window after the breaker opens                                                              |
 | `min_interval_s`                       | `0.25`                                   | Minimum gap between outgoing Jev calls, per process                                                 |
-| `destructive_threshold`                | `0.90`                                   | P(true) that triggers                                                                               |
-| `exfiltration_threshold`               | `0.70`                                   | P(true) that triggers                                                                               |
-| `impact_threshold`                     | `2.5`                                    | Score that triggers (0–3 scale)                                                                     |
+| `destructive_threshold`                | `0.90`                                    | P(true) that triggers (v1 and v2)                                                                   |
+| `exfiltration_threshold`               | `0.70`                                    | P(true) that triggers (v1 only)                                                                     |
+| `impact_threshold`                     | `2.5`                                     | Score that triggers, 0–3 scale (v1 and v2)                                                          |
+| `gate_version`                         | `v1`                                      | `v1` = inherited triple · `v2` = 6 separated signals + ladder (opt-in)                              |
+| `reads_secrets_threshold`              | `0.70`                                    | P(true) that triggers (v2 only)                                                                     |
+| `sends_outbound_threshold`             | `0.70`                                    | P(true) that triggers (v2 only)                                                                     |
+| `blast_radius_threshold`               | `2.5`                                     | Score that triggers, 0–3 scale (v2 only)                                                            |
+| `self_advocating_threshold`            | `0.70`                                    | P(true) that triggers (v2 only)                                                                     |
 | `jev_model` / `jev_base_url`           | `typesafe-ai/jev` / AI Gateway           | Gateway endpoint overrides (prefixed: the loader rejects bare `model`/`base_url`, root is reserved) |
 | `log_path`                             | `<HERMES_HOME>/logs/jev-judge.log`       | JSONL decision log                                                                                  |
 
@@ -95,10 +105,18 @@ Gateway). No key at all: the plugin loads and stays silent (fail-open).
 
 ## What leaves your machine
 
-Per gated call: the tool name plus its arguments — long values truncated to
-600 chars, key-shaped strings masked. Nothing else: no conversation history,
-no files, no memory, no tool output. `jev_ask` sends exactly the state and
+Per gated call: one JSON payload with the tool name plus its arguments —
+first 12 keys, each value redacted (key-shaped strings masked) and
+truncated to 600 chars. Nothing else: no conversation history, no files,
+no memory, no tool output. `jev_ask` sends exactly the state and
 questions the model provides.
+
+Hard limits (#19): a payload above 65536 bytes is refused **without
+sending** (fail-open `payload_too_large` — a truncated payload must never
+become a favorable verdict); 3xx is never followed (fail-open instead)
+and proxy env vars are ignored. Two backends (`typesafe` direto /
+gateway, `backend: auto` picks by key); shadow by default; `gate_version`
+default v1 (v2 opt-in).
 
 ## Verify
 
@@ -115,13 +133,31 @@ tail -f "${HERMES_HOME:-$HOME/.hermes}/logs/jev-judge.log"
 
 ## Prior art
 
-Jev plugins for Hermes are a growing family — the catalog already lists
-`hermes-jev`/Nerve (keeltrace), `jev-approvals` and `jev-curator` (anpicasso), four `jev-*`
-routers (Pinutss), `jev` (ourines) and `jev-typesafe` (ajensenwaud). This plugin occupies the
-narrowest slot in that family: a standalone `pre_tool_call` gate with shadow-by-default, its
-own thresholds fixed in code, one JSONL line per decision, and fail-open on every error path.
-It deliberately does **not** plug into Hermes' native smart-approval path (that is
-`jev-approvals`' job) and it never fails closed.
+Nothing here claims to be first — each hardening names its source:
+
+- **pi-jev** (Pi coding agent): the original questions and thresholds. v1
+  judges the inherited triple (destructive / exfiltration / impact) with
+  thresholds fixed in code, never by the model.
+- **anpicasso** (`jev-approvals` / `jev-curator`): the v2 shape — separated
+  signals (reads_secrets × sends_outbound + blast_radius + self_advocating)
+  in one request, a load-bearing ladder order (self-advocacy first so a
+  command never talks its way past the gate; the deterministic policy runs
+  last and only ever adds), an unanswered question is a failure
+  (`answer_missing`, fail-open, never 0.0), and the corpus + metrics
+  discipline behind `tools/calibration/judge/` (#21).
+- **keeltrace** (Nerve): the contracts / provenance / manifest discipline —
+  every decision lands in a JSONL log and the calibration corpus ships a
+  `PROVENANCE.json` (counts, seed, corpus SHA-256, question fingerprint).
+- **DECRUX9812** (`typesafe-skill-router`) and **xXLODXx** (`skill-router`):
+  the router slot was already occupied — our `jev-skill-router` is a
+  rebuild with three differences (dual backend, rate-limit hardening,
+  published calibration), credited in its own README.
+- **Hermes `approval_detection`**: the detection tables copied into the
+  corpus builder (#21) — path fragments, `_CMDPOS`, `_hardline_rm_path`,
+  `HARDLINE_PATTERNS`, `_SHELL_NAMES`, `DANGEROUS_PATTERNS`. No list of our
+  own was invented; the Hermes package is not imported at runtime, and the
+  matching here is direct over the normalized command — a documented
+  adaptation (see `tools/calibration/judge/corpus.py`).
 
 ## Related
 

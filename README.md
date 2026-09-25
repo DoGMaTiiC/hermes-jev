@@ -3,7 +3,8 @@
 TypeSafe **[Jev](https://docs.typesafe.ai)** (System One) decision layers for
 [Hermes Agent](https://github.com/NousResearch/hermes-agent): typed decisions
 (boolean / choice / score) with calibrated probabilities and confidence, served
-over the Vercel AI Gateway (`typesafe-ai/jev`). Stdlib only — no Node, no SDK.
+over TypeSafe Jev directly (`jev-latest`), via the Vercel AI Gateway
+(`typesafe-ai/jev`), or via OpenRouter (router). Stdlib only — no Node, no SDK.
 
 ```
 plugins/
@@ -24,8 +25,10 @@ hermes plugins enable jev-skill-router
 ```
 
 Put `TYPESAFE_API_KEY` (TypeSafe direct — preferred) and/or `AI_GATEWAY_API_KEY`
-(Vercel AI Gateway) in `~/.hermes/.env`. `backend: auto` (the default) picks the
-direct route when its key is present, else the gateway. With no key at all both
+(Vercel AI Gateway) in `~/.hermes/.env` — the router also accepts
+`OPENROUTER_API_KEY`. `backend: auto` (the default) picks the
+direct route when its key is present, else the gateway (else OpenRouter,
+router only). With no key at all both
 plugins fail open — nothing breaks, nothing is sent.
 
 ## What each plugin does
@@ -45,7 +48,9 @@ the machine) and verify commands.
   plugin branches on them.
 - **One JSONL line per decision** (`<HERMES_HOME>/logs/<plugin>.log`) so thresholds
   can be re-tuned against real traffic.
-- **Opt-in by default**; nothing leaves the machine until a mode is switched on.
+- **Opt-in by default.** The router is off until switched on (sends nothing
+  while off); the judge is shadow by default — it judges and logs gated
+  calls (that state leaves the machine) but never blocks them.
 
 ## Verify
 
