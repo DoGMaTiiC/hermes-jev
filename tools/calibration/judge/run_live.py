@@ -7,7 +7,7 @@ jamais e chamado aqui: o log real nao ganha nenhuma linha (confira com
 `wc -l ~/.hermes/logs/jev-judge.log` antes/depois).
 
 Uso:
-    python3 tools/calibration/judge/run_live.py [corpus.jsonl] [--mirror N]
+    python3 tools/calibration/judge/run_live.py [corpus.jsonl] [--mirror N] [--gate-version v1|v2]
 
 Saida em tools/calibration/judge/out/ (ignorado no .gitignore, nunca vai
 pro repo): live-<ts>.jsonl (sinais por caso) + mirror-<ts>.jsonl (check da
@@ -96,9 +96,16 @@ def sweep_v2(gate, records: list[dict]) -> list[dict]:
 def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     mirror_n = 2
-    for i, a in enumerate(sys.argv[1:]):
-        if a == "--mirror" and i + 1 < len(sys.argv[1:]):
-            mirror_n = int(sys.argv[1:][i + 1])
+    gate_version = "v2"
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == "--mirror" and i + 1 < len(argv):
+            mirror_n = int(argv[i + 1])
+        if a == "--gate-version" and i + 1 < len(argv):
+            gate_version = argv[i + 1]
+    if gate_version not in ("v1", "v2"):
+        print(f"--gate-version deve ser v1 ou v2 (veio {gate_version!r})")
+        return 2
     corpus_path = Path(
         args[0]
         if args
@@ -115,7 +122,10 @@ def main() -> int:
     if jev.resolve_backend("typesafe") != "typesafe":
         print("sem TYPESAFE_API_KEY: abortei (live exige TypeSafe direto)")
         return 1
-    thresholds = {"gate_version": "v2", **gate.DEFAULTS_V2}
+    if gate_version == "v1":
+        thresholds = {"gate_version": "v1", **gate.DEFAULTS}
+    else:
+        thresholds = {"gate_version": "v2", **gate.DEFAULTS_V2}
 
     t0 = time.monotonic()
     records, lat, fails = [], [], 0
@@ -134,16 +144,29 @@ def main() -> int:
             )
             fails += 1
         else:
-            records.append(
-                {
-                    "id": row["id"],
-                    "kind": row["kind"],
-                    "signals": dict(verdict["signals"]),
-                    "triggered": list(verdict["triggered"]),
-                    "latency_ms": verdict.get("latency_ms"),
-                    "cost": verdict.get("cost"),
-                }
-            )
+            probs = dict(verdict["probabilities"])
+            entry = {
+                "id": row["id"],
+                "kind": row["kind"],
+                "latency_ms": verdict.get("latency_ms"),
+                "cost": verdict.get("cost"),
+            }
+            if gate_version == "v1":
+                entry.update(
+                    {
+                        "destructive": float(probs["destructive"]),
+                        "exfiltration": float(probs["exfiltration"]),
+                        "impact": float(probs["impact"]),
+                    }
+                )
+            else:
+                entry.update(
+                    {
+                        "signals": dict(verdict["signals"]),
+                        "triggered": list(verdict["triggered"]),
+                    }
+                )
+            records.append(entry)
             if verdict.get("latency_ms") is not None:
                 lat.append(verdict["latency_ms"])
         print(f"\r## live {n}/{len(rows)} (fail-open {fails})", end="", flush=True)
@@ -159,50 +182,97 @@ def main() -> int:
     )
     print(f"## bruto: {raw_path} (fora do repo, .gitignore)", flush=True)
 
-    # Sweep v2 offline sobre os sinais gravados.
-    print("\n## Sweep v2 reads x sends (resto nos defaults)\n", flush=True)
-    print("| reads | sends | FP seguros | deteccao | falso-allow | barra |", flush=True)
-    print("| --- | --- | --- | --- | --- | --- |", flush=True)
-    table = sweep_v2(gate, records)
-    for row in table:
+    # Sweep offline sobre os sinais gravados (v1: destr x exfil via eval.py).
+    if gate_version == "v1":
+        print("\n## Sweep v1 destr x exfil (impact fixo 2.5)\n", flush=True)
+        print("| destr | exfil | FP seguros | deteccao | falso-allow | barra |", flush=True)
+        print("| --- | --- | --- | --- | --- | --- |", flush=True)
+        table = evalmod.sweep(records)
+        for row in table:
+            print(
+                f"| {row['destructive_threshold']:.2f} "
+                f"| {row['exfiltration_threshold']:.2f} "
+                f"| {row['fp']} ({row['fp_rate']:.0%}) "
+                f"| {row['detected']}/{row['dangerous']} ({row['detection_rate']:.0%}) "
+                f"| {row['false_allow']} "
+                f"| {'PASS' if row['pass'] else 'FAIL'} |",
+                flush=True,
+            )
+        point = evalmod.enforce_point(table)
         print(
-            f"| {row['reads_secrets_threshold']:.2f} "
-            f"| {row['sends_outbound_threshold']:.2f} "
-            f"| {row['fp']} ({row['fp_rate']:.0%}) "
-            f"| {row['detected']}/{row['dangerous']} ({row['detection_rate']:.0%}) "
-            f"| {row['false_allow']} "
-            f"| {'PASS' if row['pass'] else 'FAIL'} |",
+            "\n`enforce` utilizavel em: "
+            + (
+                f"destr {point['destructive_threshold']:.2f} / "
+                f"exfil {point['exfiltration_threshold']:.2f} "
+                f"(friccao {point['fp']}, deteccao {point['detection_rate']:.0%})"
+                if point
+                else "nenhum ponto sem falso-allow"
+            ),
             flush=True,
         )
-    passing = [r for r in table if r["pass"]]
-    point = (
-        sorted(passing, key=lambda r: (r["fp"], -r["detection_rate"]))[0]
-        if passing
-        else None
-    )
-    print(
-        "\n`enforce` utilizavel em: "
-        + (
-            f"reads {point['reads_secrets_threshold']:.2f} / "
-            f"sends {point['sends_outbound_threshold']:.2f} "
-            f"(friccao {point['fp']}, deteccao {point['detection_rate']:.0%})"
-            if point
-            else "nenhum ponto sem falso-allow"
-        ),
-        flush=True,
-    )
+        r = evalmod.rates(records, {})
+    else:
+        print("\n## Sweep v2 reads x sends (resto nos defaults)\n", flush=True)
+        print("| reads | sends | FP seguros | deteccao | falso-allow | barra |", flush=True)
+        print("| --- | --- | --- | --- | --- | --- |", flush=True)
+        table = sweep_v2(gate, records)
+        for row in table:
+            print(
+                f"| {row['reads_secrets_threshold']:.2f} "
+                f"| {row['sends_outbound_threshold']:.2f} "
+                f"| {row['fp']} ({row['fp_rate']:.0%}) "
+                f"| {row['detected']}/{row['dangerous']} ({row['detection_rate']:.0%}) "
+                f"| {row['false_allow']} "
+                f"| {'PASS' if row['pass'] else 'FAIL'} |",
+                flush=True,
+            )
+        passing = [r for r in table if r["pass"]]
+        point = (
+            sorted(passing, key=lambda r: (r["fp"], -r["detection_rate"]))[0]
+            if passing
+            else None
+        )
+        print(
+            "\n`enforce` utilizavel em: "
+            + (
+                f"reads {point['reads_secrets_threshold']:.2f} / "
+                f"sends {point['sends_outbound_threshold']:.2f} "
+                f"(friccao {point['fp']}, deteccao {point['detection_rate']:.0%})"
+                if point
+                else "nenhum ponto sem falso-allow"
+            ),
+            flush=True,
+        )
+        r = rates_v2(gate, records, {})
 
     # Latencia/custo reais.
     lat_sorted = sorted(lat)
     if lat_sorted:
         p50 = lat_sorted[len(lat_sorted) // 2]
         print(
-            f"\n## latencia v2 (n={len(lat_sorted)}): "
+            f"\n## latencia {gate_version} (n={len(lat_sorted)}): "
             f"p50 {p50}ms, media {sum(lat_sorted)/len(lat_sorted):.0f}ms, "
             f"max {lat_sorted[-1]}ms; fail-open live: {fails}",
             flush=True,
         )
+    print(
+        f"\n## defaults {gate_version}: FP {r['fp']}/{r['safe']} "
+        f"({r['fp_rate']:.0%}), deteccao {r['detected']}/{r['dangerous']} "
+        f"({r['detection_rate']:.0%}), falso-allow {r['false_allow']}",
+        flush=True,
+    )
 
+    if gate_version == "v1":
+        print(
+            "\n## mirror: n/a no v1 (rubrica invertida e check do v2)",
+            flush=True,
+        )
+        print(
+            f"\n## proveniencia: sha {sha[:12]}…, n={prov['count']}, "
+            f"by_kind {json.dumps(prov['by_kind'], ensure_ascii=False)}",
+            flush=True,
+        )
+        return 0
     # Check da rubrica invertida com o client real (poucas chamadas).
     print(f"\n## Rubrica invertida (n={mirror_n} safe + {mirror_n} destructive)\n", flush=True)
     subset = [r for r in rows if r["kind"] == "safe"][:mirror_n] + [
