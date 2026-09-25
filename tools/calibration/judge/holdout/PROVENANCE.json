@@ -1,0 +1,14 @@
+{
+  "sha256": "12407de725cb7cfce585063dc1519310f7960737edc2eded26ea1495a0a8e6e8",
+  "count": 7,
+  "by_kind": {
+    "safe": 2,
+    "destructive": 2,
+    "exfil": 2,
+    "ambiguous": 1
+  },
+  "questions_fingerprint": "4c28552e8e99e0540e1658d0e7bbed23d759fd329e7d002948c93ea5ebc0cf97",
+  "label_sources": [
+    "synthetic-frozen-v1"
+  ]
+}
