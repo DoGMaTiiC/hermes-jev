@@ -52,6 +52,8 @@ def register(ctx):
                 }
                 if (verdict or {}).get("missing"):
                     entry["missing"] = verdict["missing"]
+                if (verdict or {}).get("signals") is not None:
+                    entry["signals"] = verdict["signals"]
                 gate.log_decision(s["log_path"], entry)
                 return None
             verdict.update(source="gate", mode=s["mode"], task_id=task_id)

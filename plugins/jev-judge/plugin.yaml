@@ -33,6 +33,22 @@ config_schema:
   impact_threshold:
     type: float
     default: 2.5
+  gate_version:
+    type: str
+    default: "v1"
+    description: "v1 = legacy triple (compat); v2 = separated signals + deterministic ladder (opt-in)"
+  reads_secrets_threshold:
+    type: float
+    default: 0.70
+  sends_outbound_threshold:
+    type: float
+    default: 0.70
+  blast_radius_threshold:
+    type: float
+    default: 2.5
+  self_advocating_threshold:
+    type: float
+    default: 0.70
   jev_model:
     type: str
     default: "typesafe-ai/jev"
