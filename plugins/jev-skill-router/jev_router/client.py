@@ -40,6 +40,25 @@ RATE_LIMIT_CODES = (429, 529)
 # entry, so size must be bounded even though entries also expire by TTL.
 CACHE_MAX_ENTRIES = 256
 
+# Cap for the outbound JSON payload: anything bigger fails open without
+# sending (a truncated payload must never become a favorable verdict).
+MAX_PAYLOAD_BYTES = 65536
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse 3xx: no redirect is ever followed, fail-open instead."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# Hardened transport: no redirects, proxy env ignored.
+_OPENER = urllib.request.build_opener(_NoRedirect, urllib.request.ProxyHandler({}))
+
+
+def _urlopen(req, timeout=None):
+    return _OPENER.open(req, timeout=timeout)
+
 # Per-process state, keyed by endpoint URL: clients are rebuilt per decision,
 # but pacing and breaker must survive that.
 _PACE_LAST: dict[str, float] = {}  # endpoint -> monotonic time of last attempt
@@ -151,6 +170,15 @@ def _num(value, default: float = 0.0) -> float:
         return default
 
 
+def _noul(value) -> float | None:
+    """Finite float or None (missing/malformed noul is never 0.0)."""
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    return num if math.isfinite(num) else None
+
+
 def normalize_typesafe_answers(answers: dict) -> dict:
     """TypeSafe noul -> internal {probability}; choice/score already internal."""
     out = {}
@@ -158,7 +186,10 @@ def normalize_typesafe_answers(answers: dict) -> dict:
         if not isinstance(answer, dict):
             continue
         if answer.get("type") == "noul":
-            out[qid] = {"type": "boolean", "probability": _num(answer.get("noul"))}
+            prob = _noul(answer.get("noul"))
+            if prob is None:
+                continue  # missing/malformed: omit, never fabricate 0.0
+            out[qid] = {"type": "boolean", "probability": prob}
         else:
             out[qid] = answer
     return out
@@ -232,7 +263,7 @@ class JevClient:
         self.min_interval_s = float(min_interval_s)
         self._cache: dict[str, tuple[float, dict]] = {}
         # Seams for offline tests (transport stub, clock mock).
-        self._urlopen = urllib.request.urlopen
+        self._urlopen = _urlopen
         self._clock = time.monotonic
         self._sleep = time.sleep
 
@@ -406,6 +437,11 @@ class JevClient:
             }
         if self._breaker_open(endpoint):
             logger.debug("jev-skill-router: breaker open for %s; skipping", endpoint)
+            return None
+        if len(payload) > MAX_PAYLOAD_BYTES:
+            logger.debug(
+                "jev-skill-router: payload %d bytes over cap; failing open", len(payload)
+            )
             return None
         started = self._clock()
         body = self._post_json(endpoint, payload, headers)

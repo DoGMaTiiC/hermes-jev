@@ -1073,6 +1073,92 @@ def test_roster_symlink_cycle_no_hang_no_dup():
         print("ok  symlink cíclico não travou nem duplicou")
 
 
+# --- Ticket 19: transporte endurecido + normalização estrita ---
+
+import urllib.request as _urlrequest
+
+
+def _opener_uses_proxy(opener):
+    """True se algum ProxyHandler atua nas cadeias http/https do opener."""
+    chains = opener.handle_open.get("http", []) + opener.handle_open.get("https", [])
+    return any(isinstance(h, _urlrequest.ProxyHandler) for h in chains)
+
+
+def test_transport_default_hardened():
+    with _run_dual({}):
+        fresh = C.JevClient()  # fresco: _dual_client troca _urlopen pelo stub
+        assert fresh._urlopen is C._urlopen, "default deve ser o transporte endurecido"
+        assert fresh._urlopen is not _urlrequest.urlopen
+        assert any(isinstance(h, C._NoRedirect) for h in C._OPENER.handlers)
+        assert not _opener_uses_proxy(C._OPENER)
+    print("ok  transporte default: sem redirect, sem proxy do ambiente")
+
+
+def test_transport_redirect_fail_open():
+    client, script, _ = _enter(_run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("http", 302)]))
+    try:
+        assert client.evaluate({"request": "x"}, _Q) is None
+        assert len(script.calls) == 1, script.calls  # 3xx nunca é seguido
+    finally:
+        _leave(client)
+    redir = C._NoRedirect().redirect_request(
+        object(), None, 302, "Found", {}, "https://x.invalid/"
+    )
+    assert redir is None, redir
+    print("ok  302 vira fail-open sem seguir redirect")
+
+
+def test_transport_ignores_proxy_env():
+    saved = {n: os.environ.get(n) for n in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")}
+    try:
+        for n in saved:
+            os.environ[n] = "http://proxy.invalid:8080"
+        assert _urlrequest.getproxies(), "sanidade: o env vaza para o default do urllib"
+        assert _opener_uses_proxy(_urlrequest.build_opener()), "sanidade: opener default usa proxy"
+        assert not _opener_uses_proxy(C._OPENER), "opener endurecido ignora o env"
+    finally:
+        for n, v in saved.items():
+            if v is None:
+                os.environ.pop(n, None)
+            else:
+                os.environ[n] = v
+    print("ok  proxy do ambiente ignorado mesmo com http(s)_proxy setado")
+
+
+def test_payload_cap_fail_open():
+    big = {"request": "x", "blob": "y" * (C.MAX_PAYLOAD_BYTES + 1)}
+    client, script, _ = _enter(_run_dual({"AI_GATEWAY_API_KEY": "g"}, _steps=[("ok", _GW_BODY)]))
+    try:
+        assert client.evaluate(big, _Q) is None
+        assert script.calls == [], script.calls  # nada saiu: nunca vira veredito
+        assert client.evaluate({"request": "x"}, _Q) is not None  # sob o cap, passa
+        assert len(script.calls) == 1, script.calls
+    finally:
+        _leave(client)
+    print("ok  payload acima do cap: nada enviado, fail-open")
+
+
+def test_normalize_strict_noul():
+    out = C.normalize_typesafe_answers(
+        {
+            "ok": {"type": "noul", "noul": 0.88},
+            "zero": {"type": "noul", "noul": 0.0},  # 0.0 explícito do servidor passa
+            "missing": {"type": "noul"},
+            "null": {"type": "noul", "noul": None},
+            "garbage": {"type": "noul", "noul": "alta"},
+            "nan": {"type": "noul", "noul": "nan"},
+            "inf": {"type": "noul", "noul": float("inf")},
+            "choice": {"type": "choice", "choice": "alpha"},
+        }
+    )
+    assert out["ok"] == {"type": "boolean", "probability": 0.88}, out
+    assert out["zero"] == {"type": "boolean", "probability": 0.0}, out
+    assert out["choice"] == {"type": "choice", "choice": "alpha"}, out
+    for qid in ("missing", "null", "garbage", "nan", "inf"):
+        assert qid not in out, (qid, out)  # nunca fabrica 0.0: some
+    print("ok  noul ausente/malformado some (nunca 0.0); 0.0 explícito passa")
+
+
 if __name__ == "__main__":
     for fn in (
         test_frontmatter_quoted,
@@ -1118,6 +1204,11 @@ if __name__ == "__main__":
         test_cache_ttl,
         test_roster_follows_external_symlink,
         test_roster_symlink_cycle_no_hang_no_dup,
+        test_transport_default_hardened,
+        test_transport_redirect_fail_open,
+        test_transport_ignores_proxy_env,
+        test_payload_cap_fail_open,
+        test_normalize_strict_noul,
     ):
         fn()
     print("\ntodos os testes offline passaram")
