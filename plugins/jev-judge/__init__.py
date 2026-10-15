@@ -36,7 +36,12 @@ def register(ctx):
     def on_pre_tool_call(tool_name=None, args=None, task_id=None, **kwargs):
         try:
             s = gate.settings_for(ctx)
-            if tool_name not in _tool_list(s["tools"]):
+            judged_tools = _tool_list(s["tools"])
+            # "*" = judge every tool call. Jev's own tools are excluded: judging
+            # them would recurse (a Jev call triggering another Jev call).
+            if tool_name and (tool_name.startswith("jev") or tool_name == "jev_ask"):
+                return None
+            if "*" not in judged_tools and tool_name not in judged_tools:
                 return None
             client = gate.client_for(s)
             verdict = gate.judge(client, tool_name, args or {}, s)

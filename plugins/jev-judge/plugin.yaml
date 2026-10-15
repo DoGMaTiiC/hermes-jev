@@ -15,7 +15,7 @@ config_schema:
   tools:
     type: list
     default: ["terminal", "write_file", "patch"]
-    description: "Tool names the gate judges"
+    description: "Tool names the gate judges; [\"*\"] judges every tool call (Jev's own tools are always excluded to avoid recursion)"
   timeout_s:
     type: float
     default: 3.0
