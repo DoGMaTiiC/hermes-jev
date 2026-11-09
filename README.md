@@ -26,7 +26,8 @@ hermes plugins enable jev-skill-router
 
 Put `TYPESAFE_API_KEY` (TypeSafe direct — preferred) and/or `AI_GATEWAY_API_KEY`
 (Vercel AI Gateway) in `~/.hermes/.env` — the router also accepts
-`OPENROUTER_API_KEY`. `backend: auto` (the default) picks the
+`OPENROUTER_API_KEY`, or `NACE_API_KEY` for Nace Drex (`backend: nace`, router only).
+`backend: auto` (the default) picks the
 direct route when its key is present, else the gateway (else OpenRouter,
 router only). With no key at all both
 plugins fail open — nothing breaks, nothing is sent.
