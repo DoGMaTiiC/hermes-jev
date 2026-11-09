@@ -104,11 +104,26 @@ def test_unwritable_dump_keeps_http_error():
     print("ok  unwritable --dump-first: HTTP 429 still re-raised as HTTPError")
 
 
+def test_model_goes_to_the_resolved_backend():
+    import argparse
+    real = run_live.resolve_backend
+    try:
+        for picked, field in (("nace", "nace_model"), ("openrouter", "openrouter_model"),
+                              ("typesafe", "typesafe_model"), ("gateway", "model"), (None, "model")):
+            run_live.resolve_backend = lambda backend, _p=picked: _p
+            client = run_live.build_client(argparse.Namespace(backend="auto", model="m-x"))
+            assert getattr(client, field) == "m-x", (picked, field, vars(client))
+    finally:
+        run_live.resolve_backend = real
+    print("ok  --backend auto: --model goes to the model field of the backend auto picks")
+
+
 if __name__ == "__main__":
     for fn in (
         test_dump_written_and_redacted,
         test_unwritable_dump_keeps_success,
         test_unwritable_dump_keeps_http_error,
+        test_model_goes_to_the_resolved_backend,
     ):
         fn()
     print("\nall run_live offline tests passed")

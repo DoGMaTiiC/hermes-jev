@@ -74,8 +74,10 @@ def sample_cases(cases: list[dict], size: int, seed: int) -> list[dict]:
 def build_client(args: argparse.Namespace) -> JevClient:
     kw = {"backend": args.backend}
     if args.model:
+        # Resolve first: under --backend auto, --model belongs to the backend auto picks.
+        resolved = resolve_backend(args.backend) or ""
         field = {"typesafe": "typesafe_model", "openrouter": "openrouter_model",
-                 "nace": "nace_model"}.get(args.backend.strip().lower(), "model")
+                 "nace": "nace_model"}.get(resolved, "model")
         kw[field] = args.model
     return JevClient(**kw)
 
