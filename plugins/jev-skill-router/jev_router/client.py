@@ -1,10 +1,10 @@
-"""Jev client — TypeSafe System One, direct or via the Vercel AI Gateway.
+"""Jev client — TypeSafe System One, direct or via the Vercel AI Gateway, or Nace Drex.
 
-Pure stdlib. Backend selection (`backend: auto|typesafe|openrouter|gateway`, default
-`auto`): TypeSafe direct when TYPESAFE_API_KEY is present, else OpenRouter's
+Pure stdlib. Backend selection (`backend: auto|typesafe|openrouter|gateway|nace`,
+default `auto`): TypeSafe direct when TYPESAFE_API_KEY is present, else OpenRouter's
 Decisions API when OPENROUTER_API_KEY is present, else the gateway when
-AI_GATEWAY_API_KEY is present, else silent. Every failure path returns
-None (fail-open).
+AI_GATEWAY_API_KEY is present, else Nace (Drex, same System One wire format) when
+NACE_API_KEY is present, else silent. Every failure path returns None (fail-open).
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from datetime import timezone
@@ -31,6 +32,12 @@ DEFAULT_TYPESAFE_BASE_URL = "https://api.typesafe.ai"
 DEFAULT_TYPESAFE_MODEL = "jev-latest"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/alpha"
 DEFAULT_OPENROUTER_MODEL = "~typesafe/jev-latest"
+DEFAULT_NACE_BASE_URL = "https://console.nace.ai"
+DEFAULT_NACE_MODEL = "drex-max-v1.1"
+# Declared to Nace in X-Nace-Client so routed requests are attributed to this plugin.
+# Keep the version in step with plugin.yaml.
+PLUGIN_VERSION = "0.1.0"
+NACE_CLIENT = f"hermes-jev-skill-router/{PLUGIN_VERSION}"
 PROTOCOL_VERSION = "0.0.1"
 SPEC_VERSION = "4"
 
@@ -123,11 +130,57 @@ def typesafe_api_key() -> str:
     return _env_key("TYPESAFE_API_KEY")
 
 
+def nace_api_key() -> str:
+    """The Nace key via Hermes' scoped secrets (`agent.secret_scope.get_secret`).
+
+    Outside Hermes (no `agent` package) it falls back to the process environment.
+    Any error, including an unscoped-secret refusal, means no key: silent, never raised.
+    """
+    try:
+        from agent.secret_scope import get_secret  # type: ignore
+    except ImportError:
+        get_secret = None
+    try:
+        if get_secret is not None:
+            value = get_secret("NACE_API_KEY")
+        else:
+            value = os.environ.get("NACE_API_KEY", "")
+        key = str(value or "").strip()
+    except Exception as exc:
+        logger.debug("jev-skill-router: NACE_API_KEY unavailable (%s)", type(exc).__name__)
+        return ""
+    # A key must be one printable ASCII token: whitespace or control characters would
+    # reach the Authorization header (and the error text that rejects it). Never log it.
+    if any(not ("\x21" <= ch <= "\x7e") for ch in key):
+        logger.debug("jev-skill-router: NACE_API_KEY ignored (whitespace or control character)")
+        return ""
+    return key
+
+
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def nace_base_url_ok(url: str) -> bool:
+    """https:// with a host, or http:// to loopback only: the key must never travel in clear."""
+    try:
+        parts = urllib.parse.urlsplit(str(url or "").strip())
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if parts.scheme == "https":
+        return True
+    return parts.scheme == "http" and host in _LOOPBACK_HOSTS
+
+
 def resolve_backend(backend: str = "auto") -> str | None:
-    """Pick 'typesafe' | 'openrouter' | 'gateway' | None (no key for the wanted backend)."""
+    """Pick 'typesafe' | 'openrouter' | 'gateway' | 'nace' | None (no key for the wanted backend)."""
     want = (backend or "auto").strip().lower()
-    if want not in ("auto", "typesafe", "openrouter", "gateway"):
+    if want not in ("auto", "typesafe", "openrouter", "gateway", "nace"):
         want = "auto"
+    if want == "nace":
+        return "nace" if nace_api_key() else None
     has_ts, has_or, has_gw = (
         bool(typesafe_api_key()),
         bool(openrouter_api_key(select=False)),
@@ -143,7 +196,9 @@ def resolve_backend(backend: str = "auto") -> str | None:
         return "typesafe"
     if has_or:
         return "openrouter"
-    return "gateway" if has_gw else None
+    if has_gw:
+        return "gateway"
+    return "nace" if nace_api_key() else None
 
 
 def to_typesafe_questions(questions: dict) -> dict:
@@ -245,6 +300,8 @@ class JevClient:
         typesafe_base_url: str = DEFAULT_TYPESAFE_BASE_URL,
         openrouter_model: str = DEFAULT_OPENROUTER_MODEL,
         openrouter_base_url: str = DEFAULT_OPENROUTER_BASE_URL,
+        nace_model: str = DEFAULT_NACE_MODEL,
+        nace_base_url: str = DEFAULT_NACE_BASE_URL,
         retry_max_wait_s: float = 2.0,
         breaker_threshold: int = 3,
         breaker_cooldown_s: float = 120,
@@ -259,6 +316,8 @@ class JevClient:
         self.typesafe_base_url = typesafe_base_url.rstrip("/")
         self.openrouter_model = openrouter_model
         self.openrouter_base_url = openrouter_base_url.rstrip("/")
+        self.nace_model = nace_model
+        self.nace_base_url = nace_base_url.rstrip("/")
         self.retry_max_wait_s = float(retry_max_wait_s)
         self.breaker_threshold = int(breaker_threshold)
         self.breaker_cooldown_s = float(breaker_cooldown_s)
@@ -277,6 +336,8 @@ class JevClient:
             return backend, openrouter_api_key(select=select_openrouter)
         if backend == "gateway":
             return backend, api_key()
+        if backend == "nace":
+            return backend, nace_api_key()
         return None, None
 
     def _breaker_open(self, endpoint: str) -> bool:
@@ -367,17 +428,24 @@ class JevClient:
         backend, key = self._resolve(select_openrouter=False)
         if not backend or not key:
             return None
+        if backend == "nace" and not nace_base_url_ok(self.nace_base_url):
+            logger.debug("jev-skill-router: nace_base_url must be https://; not sending")
+            return None
 
+        key_parts = [
+            backend,
+            self.model,
+            self.typesafe_model,
+            self.openrouter_model,
+            self.nace_model,
+            state,
+            questions,
+        ]
+        if backend == "nace":
+            key_parts.append(self.nace_base_url)
         cache_key = hashlib.sha256(
             json.dumps(
-                [
-                    backend,
-                    self.model,
-                    self.typesafe_model,
-                    self.openrouter_model,
-                    state,
-                    questions,
-                ],
+                key_parts,
                 sort_keys=True,
                 ensure_ascii=False,
                 default=str,
@@ -393,12 +461,15 @@ class JevClient:
             if not key:
                 return None
 
-        if backend == "typesafe":
-            endpoint = f"{self.typesafe_base_url}/v1/systemone"
+        if backend in ("typesafe", "nace"):
+            # Nace Drex speaks the same System One wire format as TypeSafe.
+            nace = backend == "nace"
+            base = self.nace_base_url if nace else self.typesafe_base_url
+            endpoint = f"{base}/v1/systemone"
             payload = json.dumps(
                 {
                     "state": state,
-                    "model": self.typesafe_model,
+                    "model": self.nace_model if nace else self.typesafe_model,
                     "questions": to_typesafe_questions(questions),
                 },
                 ensure_ascii=False,
@@ -408,6 +479,9 @@ class JevClient:
                 "Authorization": f"Bearer {key}",
                 "content-type": "application/json",
             }
+            if nace:
+                headers["X-Nace-Client"] = NACE_CLIENT
+                headers["X-Nace-Legend"] = "object"
         elif backend == "openrouter":
             endpoint = f"{self.openrouter_base_url}/decisions"
             payload = json.dumps(
@@ -452,7 +526,7 @@ class JevClient:
         if not isinstance(body, dict):
             return None
 
-        if backend in ("typesafe", "openrouter"):
+        if backend in ("typesafe", "openrouter", "nace"):
             raw_answers = body.get("answers", {})
             if not isinstance(raw_answers, Mapping):
                 return None
@@ -465,6 +539,11 @@ class JevClient:
                 "usage": usage,
                 "latency_ms": round((self._clock() - started) * 1000),
             }
+            if backend == "nace":
+                # Attribution: the pinned version that answered and Nace's request id.
+                for field in ("model", "request_id"):
+                    if isinstance(body.get(field), str):
+                        result[field] = body[field]
         else:
             result = {
                 "answers": body.get("answers", {}),
