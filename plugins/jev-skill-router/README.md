@@ -61,10 +61,13 @@ Decisions API), `AI_GATEWAY_API_KEY` (Vercel AI Gateway key), or
 0.21. The OpenRouter route also checks Hermes' OpenRouter credential pool when
 `OPENROUTER_API_KEY` is not set. No key at all: the plugin loads and stays silent.
 
-Nace setup:
+Nace setup: open the `.env` file of the Hermes profile you use and add the line
+`NACE_API_KEY=nace_sk_...` on its own line. `hermes config env-path` prints that file;
+for a named profile, add `-p <profile>` after `hermes` in each command below. Typing the
+key into an editor keeps it out of your shell history.
 
 ```bash
-echo 'NACE_API_KEY=nace_sk_...' >> ~/.hermes/.env
+"${EDITOR:-nano}" "$(hermes config env-path)"   # add NACE_API_KEY=nace_sk_... and save
 hermes config set plugins.entries.jev-skill-router.settings.backend nace   # recommended over auto
 hermes jev-skill-router on
 hermes jev-skill-router suggest "merge two PDFs and fill in the form" --json   # shows model + request_id
