@@ -136,11 +136,20 @@ class Clock:
         self.t += s
 
 
+def _environ_secret(name, default=None):
+    return os.environ.get(name, default)
+
+
 @contextlib.contextmanager
 def env(keys):
-    """Only `keys` set among the backend keys; empty HERMES_HOME; global state reset."""
+    """Only `keys` set among the backend keys; empty HERMES_HOME; global state reset.
+
+    `get_secret` reads the process env here, so a Hermes install on the path (its
+    scope or multiplex state) cannot change which key the tests see. Tests that need
+    another `get_secret` nest `fake_secret_scope`; `no_secret_scope` hides it.
+    """
     saved = {n: os.environ.get(n) for n in KEYS + ("HERMES_HOME",)}
-    with tempfile.TemporaryDirectory() as home:
+    with tempfile.TemporaryDirectory() as home, fake_secret_scope(_environ_secret):
         try:
             for n in KEYS:
                 os.environ.pop(n, None)
@@ -210,6 +219,21 @@ def fake_secret_scope(get_secret):
             sys.modules["agent.secret_scope"] = old_stub
         for name in added:
             sys.modules.pop(name, None)
+
+
+@contextlib.contextmanager
+def no_secret_scope():
+    """`from agent.secret_scope import ...` raises ImportError, as outside Hermes."""
+    missing = object()
+    saved = sys.modules.get("agent.secret_scope", missing)
+    sys.modules["agent.secret_scope"] = None
+    try:
+        yield
+    finally:
+        if saved is missing:
+            sys.modules.pop("agent.secret_scope", None)
+        else:
+            sys.modules["agent.secret_scope"] = saved
 
 
 @contextlib.contextmanager
@@ -408,11 +432,13 @@ def test_nace_key_via_get_secret():
         assert C.resolve_backend("auto") is None
     with env({"NACE_API_KEY": "from-env"}), fake_secret_scope(lambda n, d=None: None):
         assert C.nace_api_key() == ""
-    with env({"NACE_API_KEY": "from-env"}):
+    with env({"NACE_API_KEY": "from-env"}), no_secret_scope():
         assert C.nace_api_key() == "from-env"  # outside Hermes: process env
     with env({}) as home:
         (home / ".env").write_text("NACE_API_KEY=from-dotenv\n")
         assert C.nace_api_key() == ""  # NACE_API_KEY comes from Hermes, not a .env read
+        with no_secret_scope():
+            assert C.nace_api_key() == ""  # outside Hermes the plugin does not read .env either
     print("ok  NACE_API_KEY via agent.secret_scope.get_secret; refusal is silent")
 
 
