@@ -141,15 +141,16 @@ def _environ_secret(name, default=None):
 
 
 @contextlib.contextmanager
-def env(keys):
+def env(keys, get_secret=None):
     """Only `keys` set among the backend keys; empty HERMES_HOME; global state reset.
 
-    `get_secret` reads the process env here, so a Hermes install on the path (its
-    scope or multiplex state) cannot change which key the tests see. Tests that need
-    another `get_secret` nest `fake_secret_scope`; `no_secret_scope` hides it.
+    `get_secret` reads the process env unless one is passed, so a Hermes install on
+    the path (its scope or multiplex state) cannot change which key the tests see.
+    A `fake_secret_scope` must be nested INSIDE this block (or passed here): one
+    wrapped around it is replaced. `no_secret_scope` hides the module instead.
     """
     saved = {n: os.environ.get(n) for n in KEYS + ("HERMES_HOME",)}
-    with tempfile.TemporaryDirectory() as home, fake_secret_scope(_environ_secret):
+    with tempfile.TemporaryDirectory() as home, fake_secret_scope(get_secret or _environ_secret):
         try:
             for n in KEYS:
                 os.environ.pop(n, None)
@@ -167,11 +168,11 @@ def env(keys):
 
 
 @contextlib.contextmanager
-def nace_client(keys=None, steps=(), **kw):
+def nace_client(keys=None, steps=(), get_secret=None, **kw):
     keys = {"NACE_API_KEY": SECRET} if keys is None else keys
     kw.setdefault("min_interval_s", 0)
     kw.setdefault("backend", "nace")
-    with env(keys):
+    with env(keys, get_secret):
         client = C.JevClient(**kw)
         clock = Clock()
         client._clock = clock.monotonic
@@ -566,12 +567,18 @@ def test_nace_key_with_whitespace_or_control_rejected():
     for bad in ("nace_sk_ab\ncd", "nace_sk_ab cd", "nace_sk_ab\rX-Evil: 1", "nace_sk_\x00ab",
                 "nace_sk_ab\tcd", "nace_sk_\x7fab", "nace_sk_\u2028ab", "nace_sk_é"):
         # Delivered through get_secret: the process env cannot hold a NUL byte.
-        with captured_logs() as logs, fake_secret_scope(lambda n, d=None, v=bad: v):
-            with nace_client(keys={}, steps=[("ok", DREX_BODY)]) as (client, script, _):
-                assert C.nace_api_key() == "", repr(bad)
-                assert C.resolve_backend("nace") is None, repr(bad)
-                assert client.evaluate({"request": "x"}, Q) is None, repr(bad)
-                assert script.calls == [], (repr(bad), script.calls)
+        def get_secret(name, default=None, value=bad):
+            return value if name == "NACE_API_KEY" else default
+
+        with captured_logs() as logs, nace_client(
+            keys={}, steps=[("ok", DREX_BODY)], get_secret=get_secret
+        ) as (client, script, _):
+            from agent.secret_scope import get_secret as active  # type: ignore
+            assert active("NACE_API_KEY") == bad, repr(bad)  # the malformed key is what the client sees
+            assert C.nace_api_key() == "", repr(bad)
+            assert C.resolve_backend("nace") is None, repr(bad)
+            assert client.evaluate({"request": "x"}, Q) is None, repr(bad)
+            assert script.calls == [], (repr(bad), script.calls)
         assert "nace_sk_" not in logs.getvalue(), (repr(bad), logs.getvalue())  # no key, escaped or not
     with env({"NACE_API_KEY": f"  {SECRET}\n"}):
         assert C.nace_api_key() == SECRET  # surrounding whitespace is stripped first
