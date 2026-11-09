@@ -19,7 +19,8 @@ picked with ``random.Random(seed)`` so two models can run on the same sample.
 Each row also records, per HTTP call, the status, latency, error kind and, when the
 provider returns them, ``model``, ``request_id`` and input tokens. Keys and request
 headers are never written to the JSONL. ``--dump-first`` writes the first request and
-response to PATH with the Authorization value redacted.
+response to PATH with the Authorization value redacted. The dump is best effort: if it
+cannot be written, the runner says so on stderr and the call's result is unchanged.
 """
 
 from __future__ import annotations
@@ -39,8 +40,7 @@ sys.path.insert(0, str(PLUGIN))
 
 from jev_router import roster as roster_mod
 from jev_router import router as router_mod
-from jev_router import client as client_mod
-from jev_router.client import JevClient
+from jev_router.client import JevClient, resolve_backend
 
 LABELLED = HERE / "labelled.json"
 ROSTER_DIR = Path.home() / ".hermes" / "skills"
@@ -96,10 +96,14 @@ class Recorder:
             resp = self.inner(req, timeout=timeout)
         except urllib.error.HTTPError as exc:
             call.update(status=exc.code, error="http")
-            body = exc.read() if exc.fp else b""
-            self._dump(req, exc.code, exc.headers, body)
+            if self.dump_path:
+                try:
+                    body = exc.read() if exc.fp else b""
+                except Exception:  # diagnostics only: the HTTPError below must still reach the client
+                    body = b""
+                self._dump(req, exc.code, exc.headers, body)
             raise
-        except (socket.timeout, TimeoutError) as exc:
+        except (socket.timeout, TimeoutError):
             call.update(status=None, error="timeout")
             raise
         except urllib.error.URLError as exc:
@@ -127,7 +131,18 @@ class Recorder:
         return _Replay(raw)
 
     def _dump(self, req, status, headers, raw: bytes) -> None:
-        if not self.dump_path or self.dump_path.exists():
+        """Best effort: a failed dump is reported on stderr, never raised into the call."""
+        if not self.dump_path:
+            return
+        try:
+            self._write_dump(req, status, headers, raw)
+        except Exception as exc:  # e.g. missing parent dir, read-only path, odd request body
+            print(f"--dump-first: could not write {self.dump_path} ({type(exc).__name__}: {exc})",
+                  file=sys.stderr)
+            self.dump_path = None  # one warning, no further attempts
+
+    def _write_dump(self, req, status, headers, raw: bytes) -> None:
+        if self.dump_path.exists():
             return
         sent = {k: v for k, v in req.header_items()}
         for name in list(sent):
@@ -183,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
 
     client = build_client(args)  # no flags: shipped defaults, backend auto
     recorder = Recorder(client, args.dump_first)
-    backend = client._resolve()[0]
+    backend = resolve_backend(client.backend)
     model = {"typesafe": client.typesafe_model, "openrouter": client.openrouter_model,
              "gateway": client.model, "nace": client.nace_model}.get(backend or "")
     print(f"{len(cases)} cases · {len(skills)} skills · backend={backend} · model={model}")
