@@ -3,7 +3,8 @@
 Route: **Nace direct** (`backend: nace`, `NACE_API_KEY`, `POST https://console.nace.ai/v1/systemone`).
 Two models on the **same seeded sample**: `drex-max-v1.1` (the plugin's `nace_model` default) and
 `drex-latest` (which answered as `drex-v2.0`). 120 HTTP calls in total, 0 fail-open, about
-$0.003 at $0.03 per million input tokens.
+$0.003 for both models together at $0.03 per million input tokens (`drex-max-v1.1` alone: 60,442
+input tokens, about $0.002).
 
 ## Method
 
@@ -19,17 +20,21 @@ $0.003 at $0.03 per million input tokens.
   thresholds gate 0.30 / fits 0.40). Raw rows: `tools/calibration/raw-nace-drex-max-v1.1-2026-11-09.jsonl`
   and `tools/calibration/raw-nace-drex-latest-2026-11-09.jsonl`. Each row lists every HTTP call with
   its status, latency, the `model` that answered, the `request_id` and input tokens. No keys or
-  headers are stored.
+  headers are stored. `run_live.py` writes `ts` in the machine's local offset; after the run the
+  `ts` values in both files were rewritten to UTC (`Z`). Nothing else in the rows changed.
 - Scores are an offline replay: `python3 tools/calibration/score.py <raw>.jsonl`.
 
 Repro:
 
 ```bash
-export NACE_API_KEY=...   # your own key
-python3 tools/calibration/run_live.py tools/calibration/raw-nace-drex-max-v1.1-2026-11-09.jsonl \
+read -rs NACE_API_KEY && export NACE_API_KEY   # paste your own key; not echoed, not in history
+python3 tools/calibration/run_live.py /tmp/raw-nace-repro.jsonl \
   --backend nace --model drex-max-v1.1 --roster "$HERMES_HOME/skills" --sample 30 --seed 325
-python3 tools/calibration/score.py tools/calibration/raw-nace-drex-max-v1.1-2026-11-09.jsonl
+python3 tools/calibration/score.py /tmp/raw-nace-repro.jsonl
 ```
+
+Write to a new file. `run_live.py` appends, and it skips every request already in the output
+file, so pointing it at the committed JSONL would skip all 30 cases.
 
 **Not comparable with the 2026-09-21 run** (95%, 103-skill private roster, all 76 requests):
 different roster, different sample size. The two models below are comparable with each other.
