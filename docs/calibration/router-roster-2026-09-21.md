@@ -83,6 +83,7 @@ foram descartados pelo runner porque o label é invisível ao roster. Ticket: **
 ## Reprodutibilidade
 
 ```bash
-python3 tools/calibration/run_live.py     # 76 requests, ~4 min, rota direta
-python3 tools/calibration/score.py        # tabelas acima, offline, sobre o JSONL
+python3 tools/calibration/score.py        # tabelas acima, offline, sobre o JSONL commitado
+python3 tools/calibration/run_live.py /tmp/raw-repro.jsonl   # 76 requests, ~4 min, rota direta
+python3 tools/calibration/score.py /tmp/raw-repro.jsonl
 ```

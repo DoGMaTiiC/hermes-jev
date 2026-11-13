@@ -118,12 +118,59 @@ def test_model_goes_to_the_resolved_backend():
     print("ok  --backend auto: --model goes to the model field of the backend auto picks")
 
 
+NACE = {"backend": "nace", "model_requested": "drex-max-v1.1", "roster": 44}
+
+
+def write_rows(path: Path, rows: list[dict]) -> None:
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+
+def test_resume_matching_config():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "raw.jsonl"
+        assert run_live.resumable_requests(path, NACE) == set()  # no file yet
+        write_rows(path, [{"request": "a", **NACE}, {"request": "b", **NACE}])
+        assert run_live.resumable_requests(path, NACE) == {"a", "b"}
+    print("ok  resume: rows with the same backend/model/roster are skipped")
+
+
+def test_resume_refuses_other_config():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "raw.jsonl"
+        for other in ({**NACE, "backend": "typesafe"}, {**NACE, "model_requested": "drex-latest"},
+                      {**NACE, "roster": 103}):
+            write_rows(path, [{"request": "a", **NACE}, {"request": "b", **other}])
+            try:
+                run_live.resumable_requests(path, NACE)
+            except ValueError as exc:
+                assert "line 2" in str(exc) and "new output path" in str(exc), exc
+            else:
+                raise AssertionError(f"resumed a file written with {other}")
+    print("ok  resume: refuses a file written with another backend, model or roster")
+
+
+def test_resume_refuses_unidentified_rows():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "raw.jsonl"
+        write_rows(path, [{"request": "a", "kind": "covered", "expected": "pdf"}])  # 2026-09-21 shape
+        try:
+            run_live.resumable_requests(path, NACE)
+        except ValueError as exc:
+            assert "does not record" in str(exc), exc
+        else:
+            raise AssertionError("resumed rows that do not record their settings")
+    print("ok  resume: refuses rows that do not record backend/model/roster")
+
+
 if __name__ == "__main__":
     for fn in (
         test_dump_written_and_redacted,
         test_unwritable_dump_keeps_success,
         test_unwritable_dump_keeps_http_error,
         test_model_goes_to_the_resolved_backend,
+        test_resume_matching_config,
+        test_resume_refuses_other_config,
+        test_resume_refuses_unidentified_rows,
     ):
         fn()
     print("\nall run_live offline tests passed")

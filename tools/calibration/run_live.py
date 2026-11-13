@@ -13,14 +13,19 @@ Usage: python3 tools/calibration/run_live.py [raw-<date>.jsonl]
        [--backend auto|typesafe|openrouter|gateway|nace] [--model ID]
        [--roster DIR] [--sample N --seed S] [--dump-first PATH]
 
-With no flags it behaves as before (shipped client defaults, ~/.hermes/skills, every
-labelled case). ``--sample N`` keeps the covered:none ratio of 24:6 per 30 cases,
+With no flags it uses the shipped client defaults, ~/.hermes/skills and every labelled
+case. ``--sample N`` keeps the covered:none ratio of 24:6 per 30 cases,
 picked with ``random.Random(seed)`` so two models can run on the same sample.
 Each row also records, per HTTP call, the status, latency, error kind and, when the
 provider returns them, ``model``, ``request_id`` and input tokens. Keys and request
 headers are never written to the JSONL. ``--dump-first`` writes the first request and
 response to PATH with the Authorization value redacted. The dump is best effort: if it
 cannot be written, the runner says so on stderr and the call's result is unchanged.
+
+The runner appends to the output file and skips requests already in it. Every row records
+its backend, model and roster size, and the runner resumes a file only when every row
+matches the current run. It refuses a file with other settings, or with rows that do not
+record them (such as the committed ``raw-2026-09-21.jsonl``): pass a new output path.
 """
 
 from __future__ import annotations
@@ -80,6 +85,30 @@ def build_client(args: argparse.Namespace) -> JevClient:
                  "nace": "nace_model"}.get(resolved, "model")
         kw[field] = args.model
     return JevClient(**kw)
+
+
+def resumable_requests(raw_path: Path, config: dict) -> set[str]:
+    """Requests already in ``raw_path``; ValueError if a row was written with other settings."""
+    done: set[str] = set()
+    if not raw_path.exists():
+        return done
+    for number, line in enumerate(raw_path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        written = {key: row.get(key) for key in config}
+        if not all(key in row for key in config):
+            raise ValueError(
+                f"{raw_path} line {number} does not record {', '.join(config)}, so its rows "
+                "cannot be matched to this run. Pass a new output path."
+            )
+        if written != config:
+            raise ValueError(
+                f"{raw_path} line {number} was written with {written}, this run is {config}. "
+                "Pass a new output path."
+            )
+        done.add(row["request"])
+    return done
 
 
 class Recorder:
@@ -192,18 +221,18 @@ def main(argv: list[str] | None = None) -> int:
     cases = [c for c in cases if not c["expected"] or c["expected"] in by_name]
     cases = sample_cases(cases, args.sample, args.seed)
 
-    done = set()
-    if raw_path.exists():
-        for line in raw_path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                done.add(json.loads(line)["request"])
-
     client = build_client(args)  # no flags: shipped defaults, backend auto
     recorder = Recorder(client, args.dump_first)
     backend = resolve_backend(client.backend)
     model = {"typesafe": client.typesafe_model, "openrouter": client.openrouter_model,
              "gateway": client.model, "nace": client.nace_model}.get(backend or "")
     print(f"{len(cases)} cases · {len(skills)} skills · backend={backend} · model={model}")
+    config = {"backend": backend, "model_requested": model, "roster": len(skills)}
+    try:
+        done = resumable_requests(raw_path, config)
+    except ValueError as exc:
+        print(f"refusing to resume: {exc}", file=sys.stderr)
+        return 2
     for index, case in enumerate(cases, 1):
         request = case["request"]
         if request in done:
@@ -256,9 +285,9 @@ def main(argv: list[str] | None = None) -> int:
                 }
             )
         row["wall_ms"] = round((time.monotonic() - started) * 1000)
+        row.update(config)
         if args.backend != "auto" or args.model or args.sample:
-            row.update(backend=backend, model_requested=model, roster=len(skills),
-                       calls=list(recorder.calls))
+            row["calls"] = list(recorder.calls)
         with raw_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
         verdict = (
