@@ -1,7 +1,7 @@
 """jev-skill-router — name the one skill that fits the turn, before the model call.
 
 Typed routing via TypeSafe Jev (System One), direct or through OpenRouter / the
-Vercel AI Gateway: before the model call, Jev picks at most one skill from the
+Vercel AI Gateway, or via Nace Drex (same wire format): before the model call, Jev picks at most one skill from the
 live roster and the hook injects a single ``<skill_relevance>`` line into the
 user-message context. Silence when nothing fits. Opt-in (``mode: off`` by
 default), fail-open on every error path, one JSON line logged per decision.
@@ -82,6 +82,14 @@ def _settings(ctx) -> dict:
         "breaker_threshold": num("breaker_threshold", 3, int),
         "breaker_cooldown_s": num("breaker_cooldown_s", 120, float),
         "min_interval_s": num("min_interval_s", 0.25, float),
+        "nace_model": str(
+            ctx.get_config("nace_model", _client_mod.DEFAULT_NACE_MODEL)
+            or _client_mod.DEFAULT_NACE_MODEL
+        ),
+        "nace_base_url": str(
+            ctx.get_config("nace_base_url", _client_mod.DEFAULT_NACE_BASE_URL)
+            or _client_mod.DEFAULT_NACE_BASE_URL
+        ),
         "jev_model": str(ctx.get_config("jev_model", "typesafe-ai/jev") or "typesafe-ai/jev"),
         "jev_base_url": str(
             ctx.get_config("jev_base_url", "https://ai-gateway.vercel.sh/v4/ai")
@@ -166,6 +174,10 @@ def decide(settings: dict, text: str, *, client=None, source: str = "hook"):
                 openrouter_base_url=str(
                     settings.get("openrouter_base_url", "https://openrouter.ai/api/alpha")
                 ),
+                nace_model=str(settings.get("nace_model", _client_mod.DEFAULT_NACE_MODEL)),
+                nace_base_url=str(
+                    settings.get("nace_base_url", _client_mod.DEFAULT_NACE_BASE_URL)
+                ),
                 retry_max_wait_s=float(settings.get("retry_max_wait_s", 2.0)),
                 breaker_threshold=int(settings.get("breaker_threshold", 3)),
                 breaker_cooldown_s=float(settings.get("breaker_cooldown_s", 120)),
@@ -184,12 +196,14 @@ def decide(settings: dict, text: str, *, client=None, source: str = "hook"):
         if result is None:
             log_decision(settings, {**base, "outcome": "silent", "reason": "no_fit"})
             return None, {"outcome": "silent", "reason": "no_fit"}
-        log_decision(
-            settings,
-            {**base, "outcome": "suggested", "skill": result.skill, "gate": result.gate,
-             "probability": result.probability, "confidence": result.confidence,
-             "latency_ms": result.latency_ms, "cost": result.cost, "calls": result.calls},
-        )
+        entry = {**base, "outcome": "suggested", "skill": result.skill, "gate": result.gate,
+                 "probability": result.probability, "confidence": result.confidence,
+                 "latency_ms": result.latency_ms, "cost": result.cost, "calls": result.calls}
+        if result.model:
+            entry["model"] = result.model
+        if result.request_id:
+            entry["request_id"] = result.request_id
+        log_decision(settings, entry)
         return result, {"outcome": "suggested"}
     except Exception as exc:
         logger.debug("jev-skill-router: decision failed (fail-open): %s", exc)
@@ -232,7 +246,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     subs = subparser.add_subparsers(dest="jev_skill_router_action")
     subs.add_parser("on", help="Turn routing on (every eligible turn asks Jev)")
     subs.add_parser("off", help="Turn routing off (default; nothing leaves the machine)")
-    subs.add_parser("auto", help="Route when a TypeSafe, OpenRouter, or gateway key is present")
+    subs.add_parser("auto", help="Route when a TypeSafe, OpenRouter, gateway, or Nace key is present")
     subs.add_parser("status", help="Show mode, roster, thresholds, endpoint, log path")
     suggest = subs.add_parser("suggest", help="Run one live routing decision on <text>")
     suggest.add_argument("text", help="The request text to route")
@@ -247,6 +261,7 @@ def _cmd_status(ctx, settings: dict) -> int:
     gw = "present" if _client_mod.api_key() else "missing"
     ts = "present" if _client_mod.typesafe_api_key() else "missing"
     or_key = "present" if _client_mod.openrouter_api_key() else "missing"
+    nace = "present" if _client_mod.nace_api_key() else "missing"
     print(f"mode:          {settings['mode']}")
     print(f"roster:        {len(skills)} skills from {roster_dir(settings)}")
     print(f"gate/fits:     {settings['gate']}/{settings['fits']}")
@@ -257,7 +272,8 @@ def _cmd_status(ctx, settings: dict) -> int:
     print(f"endpoint:      {settings['jev_model']} @ {settings['jev_base_url']}")
     print(f"typesafe:      {settings.get('typesafe_model', 'jev-latest')} @ {settings.get('typesafe_base_url', 'https://api.typesafe.ai')}")
     print(f"openrouter:    {settings.get('openrouter_model', '~typesafe/jev-latest')} @ {settings.get('openrouter_base_url', 'https://openrouter.ai/api/alpha')}")
-    print(f"keys:          TYPESAFE_API_KEY={ts}  OPENROUTER_API_KEY={or_key}  AI_GATEWAY_API_KEY={gw}")
+    print(f"nace:          {settings.get('nace_model', _client_mod.DEFAULT_NACE_MODEL)} @ {settings.get('nace_base_url', _client_mod.DEFAULT_NACE_BASE_URL)}")
+    print(f"keys:          TYPESAFE_API_KEY={ts}  OPENROUTER_API_KEY={or_key}  AI_GATEWAY_API_KEY={gw}  NACE_API_KEY={nace}")
     print(f"log:           {log_file(settings)}")
     return 0
 
@@ -276,6 +292,8 @@ def _cmd_suggest(ctx, settings: dict, args) -> int:
             "skill": result.skill, "gate": result.gate,
             "probability": result.probability, "confidence": result.confidence,
             "latency_ms": result.latency_ms, "cost": result.cost, "calls": result.calls,
+            **({"model": result.model} if result.model else {}),
+            **({"request_id": result.request_id} if result.request_id else {}),
         }, ensure_ascii=False))
     else:
         print(f"suggested: {result.skill} "
@@ -288,6 +306,13 @@ def _cmd_check(ctx, settings: dict) -> int:
     ok = True
     key = _client_mod.resolve_backend(settings.get("backend", "auto"))
     print(f"backend: {'OK (' + key + ')' if key else 'SILENT (no key for backend ' + str(settings.get('backend', 'auto')) + ')'}")
+    if key == "nace" or str(settings.get("backend", "auto")).strip().lower() == "nace":
+        nace = "present" if _client_mod.nace_api_key() else "missing"
+        print(f"nace:    NACE_API_KEY={nace} model={settings.get('nace_model', _client_mod.DEFAULT_NACE_MODEL)}")
+        base = settings.get("nace_base_url", _client_mod.DEFAULT_NACE_BASE_URL)
+        if not _client_mod.nace_base_url_ok(base):
+            print(f"nace:    FAIL (nace_base_url {base} refused: https:// required, http:// only for localhost)")
+            ok = False
     ok = ok and bool(key)
     try:
         skills = get_roster(settings)

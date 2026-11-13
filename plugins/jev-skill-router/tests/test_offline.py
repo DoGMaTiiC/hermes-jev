@@ -333,9 +333,11 @@ def test_cli_status_and_check():
         (home / "skills").mkdir(parents=True)
         old_home, old_key = os.environ.get("HERMES_HOME"), os.environ.get("AI_GATEWAY_API_KEY")
         old_ts = os.environ.get("TYPESAFE_API_KEY")
+        old_nace = os.environ.get("NACE_API_KEY")
         os.environ["HERMES_HOME"] = str(home)
         os.environ.pop("AI_GATEWAY_API_KEY", None)
         os.environ.pop("TYPESAFE_API_KEY", None)
+        os.environ.pop("NACE_API_KEY", None)
         try:
             ctx = FakeCtx({"mode": "off", "roster_dir": str(home / "skills"),
                            "log_path": str(home / "logs" / "jev-skill-router.log")})
@@ -354,6 +356,8 @@ def test_cli_status_and_check():
                 os.environ["AI_GATEWAY_API_KEY"] = old_key
             if old_ts is not None:
                 os.environ["TYPESAFE_API_KEY"] = old_ts
+            if old_nace is not None:
+                os.environ["NACE_API_KEY"] = old_nace
     print("ok  cli status e check")
 
 
@@ -455,6 +459,7 @@ _Q = {"q": {"type": "boolean", "instructions": "?"}}
 _TS_URL = "https://api.typesafe.ai/v1/systemone"
 _OR_URL = "https://openrouter.ai/api/alpha/decisions"
 _GW_URL = "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
+_NACE_URL = "https://console.nace.ai/v1/systemone"
 
 
 def _dual_client(keys, **kw):
@@ -464,10 +469,10 @@ def _dual_client(keys, **kw):
     with tempfile.TemporaryDirectory() as home:
         saved = {
             n: os.environ.get(n)
-            for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")
+            for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "NACE_API_KEY", "HERMES_HOME")
         }
         try:
-            for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY"):
+            for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "NACE_API_KEY"):
                 os.environ.pop(n, None)
             for n, v in keys.items():
                 os.environ[n] = v
@@ -525,11 +530,12 @@ def test_hook_auto_silent_without_key():
         (home / "skills").mkdir(parents=True)
         saved = {
             n: os.environ.get(n)
-            for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")
+            for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "NACE_API_KEY", "HERMES_HOME")
         }
         os.environ.pop("TYPESAFE_API_KEY", None)
         os.environ.pop("OPENROUTER_API_KEY", None)
         os.environ.pop("AI_GATEWAY_API_KEY", None)
+        os.environ.pop("NACE_API_KEY", None)
         os.environ["HERMES_HOME"] = str(home)
         try:
             ctx = FakeCtx({"mode": "auto"})
@@ -726,9 +732,9 @@ def test_openrouter_pool_detection_uses_peek_not_select():
     old_pool = sys.modules.get("agent.credential_pool")
     sys.modules["agent"] = fake_agent
     sys.modules["agent.credential_pool"] = fake_pool
-    saved = {n: os.environ.get(n) for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "HERMES_HOME")}
+    saved = {n: os.environ.get(n) for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "NACE_API_KEY", "HERMES_HOME")}
     try:
-        for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY"):
+        for n in ("TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "NACE_API_KEY"):
             os.environ.pop(n, None)
         with tempfile.TemporaryDirectory() as home:
             os.environ["HERMES_HOME"] = home
@@ -812,9 +818,15 @@ def test_backend_selection():
         ({"OPENROUTER_API_KEY": "o"}, "openrouter", "openrouter", _OR_URL),
         ({"TYPESAFE_API_KEY": "t", "AI_GATEWAY_API_KEY": "g"}, "gateway", "gateway", _GW_URL),
         ({"TYPESAFE_API_KEY": "t", "AI_GATEWAY_API_KEY": "g"}, "bogus", "typesafe", _TS_URL),
+        ({"NACE_API_KEY": "n"}, "auto", "nace", _NACE_URL),
+        ({"NACE_API_KEY": "n", "AI_GATEWAY_API_KEY": "g"}, "auto", "gateway", _GW_URL),
+        ({"TYPESAFE_API_KEY": "t", "OPENROUTER_API_KEY": "o", "AI_GATEWAY_API_KEY": "g", "NACE_API_KEY": "n"}, "auto", "typesafe", _TS_URL),
+        ({"TYPESAFE_API_KEY": "t", "OPENROUTER_API_KEY": "o", "AI_GATEWAY_API_KEY": "g"}, "nace", None, None),
+        ({"TYPESAFE_API_KEY": "t", "OPENROUTER_API_KEY": "o", "AI_GATEWAY_API_KEY": "g", "NACE_API_KEY": "n"}, "nace", "nace", _NACE_URL),
+        ({"NACE_API_KEY": "n"}, "typesafe", None, None),
     ]
     for keys, backend, want, url in cases:
-        steps = [("ok", _OR_BODY if want in ("typesafe", "openrouter") else _GW_BODY)] if want else []
+        steps = [("ok", _OR_BODY if want in ("typesafe", "openrouter", "nace") else _GW_BODY)] if want else []
         client, script, _ = _enter(_run_dual(keys, backend=backend, _steps=steps))
         try:
             assert C.resolve_backend(backend) == want, (keys, backend, want)
@@ -826,7 +838,7 @@ def test_backend_selection():
                 assert script.calls[0][0] == url, script.calls[0][0]
         finally:
             _leave(client)
-    print("ok  backend auto|typesafe|openrouter|gateway resolve e silencia sem chave")
+    print("ok  backend auto|typesafe|openrouter|gateway|nace resolve e silencia sem chave")
 
 
 def test_retry_after_seconds():

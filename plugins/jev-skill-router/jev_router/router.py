@@ -59,6 +59,10 @@ class Result:
     latency_ms: int
     cost: str | None = None
     calls: int = 1
+    # Set by backends that attribute answers (Nace): the pinned model version that
+    # answered and the provider request id of the call that named the skill.
+    model: str | None = None
+    request_id: str | None = None
 
 
 def document(request: str, recent_context: str = "") -> dict:
@@ -278,4 +282,6 @@ def suggest(
         latency_ms=int(ranked["latency_ms"]) + int(result.get("latency_ms") or 0),
         cost=result.get("cost") or ranked.get("cost"),
         calls=calls,
+        model=result.get("model"),
+        request_id=result.get("request_id"),
     )
