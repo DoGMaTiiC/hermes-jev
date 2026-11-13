@@ -23,8 +23,8 @@ response to PATH with the Authorization value redacted. The dump is best effort:
 cannot be written, the runner says so on stderr and the call's result is unchanged.
 
 The runner appends to the output file and skips requests already in it. Every row records
-its backend, model and roster size, and the runner resumes a file only when every row
-matches the current run. It refuses a file with other settings, or with rows that do not
+its backend, model, roster size, ``--sample`` and ``--seed`` (None when unused), and the
+runner resumes a file only when every row matches the current run. It refuses a file with other settings, or with rows that do not
 record them (such as the committed ``raw-2026-09-21.jsonl``): pass a new output path.
 """
 
@@ -92,10 +92,23 @@ def resumable_requests(raw_path: Path, config: dict) -> set[str]:
     done: set[str] = set()
     if not raw_path.exists():
         return done
-    for number, line in enumerate(raw_path.read_text(encoding="utf-8").splitlines(), 1):
+    try:
+        text = raw_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{raw_path} is not UTF-8 text ({exc}). Pass a new output path.") from exc
+    for number, line in enumerate(text.splitlines(), 1):
         if not line.strip():
             continue
-        row = json.loads(line)
+        try:
+            row = json.loads(line)
+        except ValueError as exc:  # e.g. a last line cut off by an interrupted run
+            raise ValueError(
+                f"{raw_path} line {number} is not a JSON row ({exc}). Pass a new output path."
+            ) from exc
+        if not isinstance(row, dict) or "request" not in row:
+            raise ValueError(
+                f"{raw_path} line {number} is not a run_live row. Pass a new output path."
+            )
         written = {key: row.get(key) for key in config}
         if not all(key in row for key in config):
             raise ValueError(
@@ -227,7 +240,8 @@ def main(argv: list[str] | None = None) -> int:
     model = {"typesafe": client.typesafe_model, "openrouter": client.openrouter_model,
              "gateway": client.model, "nace": client.nace_model}.get(backend or "")
     print(f"{len(cases)} cases · {len(skills)} skills · backend={backend} · model={model}")
-    config = {"backend": backend, "model_requested": model, "roster": len(skills)}
+    config = {"backend": backend, "model_requested": model, "roster": len(skills),
+              "sample": args.sample or None, "seed": args.seed if args.sample else None}
     try:
         done = resumable_requests(raw_path, config)
     except ValueError as exc:
